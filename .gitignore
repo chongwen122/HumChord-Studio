@@ -1,0 +1,13 @@
+.venv/
+.agents/
+.codex/
+dist/
+test/
+__pycache__/
+*.pyc
+*.log
+*.tmp
+*.mid
+*.midi
+*.wav
+*.zip

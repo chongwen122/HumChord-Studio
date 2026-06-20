@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hum Pitch Studio</title>
+  <link rel="stylesheet" href="styles.css?v=20260621-keysnap">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Hum To MIDI</p>
+        <h1>Hum Pitch Studio</h1>
+      </div>
+      <div class="status-card">
+        <span id="statusDot" class="status-dot"></span>
+        <span id="statusText">准备就绪</span>
+      </div>
+    </header>
+
+    <nav class="workflow-nav" aria-label="工作流">
+      <button class="page-tab active" type="button" data-page-tab="record">录音/导入</button>
+      <button class="page-tab" type="button" data-page-tab="detect">识别修音</button>
+      <button class="page-tab" type="button" data-page-tab="harmony">和弦编配</button>
+      <button class="page-tab" type="button" data-page-tab="export">试听导出</button>
+    </nav>
+
+    <section class="workspace">
+      <aside class="control-column">
+        <section class="panel" data-pages="record">
+          <div class="panel-heading">
+            <h2>音频</h2>
+            <span id="audioDuration">0.0s</span>
+          </div>
+          <div class="button-grid">
+            <button id="recordBtn" class="primary">开始录音</button>
+            <button id="stopBtn" disabled>停止录音</button>
+          </div>
+          <div class="device-row">
+            <label>
+              <span>麦克风输入</span>
+              <select id="audioInputSelect">
+                <option value="">系统默认输入</option>
+              </select>
+            </label>
+            <button id="refreshInputsBtn" type="button">刷新</button>
+          </div>
+          <label class="file-picker">
+            <span>导入音频</span>
+            <input id="fileInput" type="file" accept="audio/*">
+          </label>
+          <div class="audio-name" id="audioName">尚未载入音频</div>
+        </section>
+
+        <section class="panel melodyne-panel" data-pages="record">
+          <div class="panel-heading">
+            <h2>本地引擎</h2>
+            <span>Basic Pitch</span>
+          </div>
+          <div class="button-grid">
+            <button id="exportWavBtn" disabled>导出 WAV</button>
+            <label class="file-picker inline-picker">
+              <span>导入外部 MIDI</span>
+              <input id="melodyneMidiInput" type="file" accept=".mid,.midi,audio/midi">
+            </label>
+          </div>
+          <div class="audio-name" id="melodyneStatus">正在检测本地高精度引擎</div>
+        </section>
+
+        <section class="panel" data-pages="record detect harmony export">
+          <div class="panel-heading">
+            <h2>节拍</h2>
+            <span id="markerCount">0 标记</span>
+          </div>
+          <div class="field-grid">
+            <label>
+              <span>BPM</span>
+              <input id="tempoInput" type="number" min="40" max="240" value="120">
+            </label>
+            <label>
+              <span>拍号</span>
+              <div class="signature-input">
+                <input id="sigTopInput" type="number" min="1" max="12" value="4">
+                <input id="sigBottomInput" type="number" min="2" max="16" value="4">
+              </div>
+            </label>
+            <label>
+              <span>调性</span>
+              <select id="keySelect">
+                <option value="" selected>自动识别</option>
+                <optgroup label="大调">
+                  <option value="0:major">C major</option>
+                  <option value="1:major">C# major</option>
+                  <option value="2:major">D major</option>
+                  <option value="3:major">Eb major</option>
+                  <option value="4:major">E major</option>
+                  <option value="5:major">F major</option>
+                  <option value="6:major">F# major</option>
+                  <option value="7:major">G major</option>
+                  <option value="8:major">Ab major</option>
+                  <option value="9:major">A major</option>
+                  <option value="10:major">Bb major</option>
+                  <option value="11:major">B major</option>
+                </optgroup>
+                <optgroup label="小调">
+                  <option value="0:minor">C minor</option>
+                  <option value="1:minor">C# minor</option>
+                  <option value="2:minor">D minor</option>
+                  <option value="3:minor">Eb minor</option>
+                  <option value="4:minor">E minor</option>
+                  <option value="5:minor">F minor</option>
+                  <option value="6:minor">F# minor</option>
+                  <option value="7:minor">G minor</option>
+                  <option value="8:minor">Ab minor</option>
+                  <option value="9:minor">A minor</option>
+                  <option value="10:minor">Bb minor</option>
+                  <option value="11:minor">B minor</option>
+                </optgroup>
+              </select>
+            </label>
+          </div>
+          <label class="toggle-row">
+            <input id="metronomeToggle" type="checkbox" checked>
+            <span>录音节拍器</span>
+          </label>
+          <label class="toggle-row">
+            <input id="manualMarkerToggle" type="checkbox" checked>
+            <span>Space 手动分音</span>
+          </label>
+        </section>
+
+        <section class="panel" data-pages="detect">
+          <div class="panel-heading">
+            <h2>识别</h2>
+            <span id="noteCount">0 音符</span>
+          </div>
+          <div class="field-grid">
+            <label>
+              <span>最低 Hz</span>
+              <input id="fminInput" type="number" min="50" max="400" value="75">
+            </label>
+            <label>
+              <span>最高 Hz</span>
+              <input id="fmaxInput" type="number" min="300" max="1600" value="700">
+            </label>
+            <label>
+              <span>噪声门 dB</span>
+              <input id="noiseGateInput" type="number" min="0" max="24" value="6">
+            </label>
+            <label>
+              <span>最短 ms</span>
+              <input id="minNoteInput" type="number" min="40" max="500" value="100">
+            </label>
+            <label>
+              <span>和弦粒度</span>
+              <select id="harmonyGridSelect">
+                <option value="bar">一小节</option>
+                <option value="half" selected>半小节</option>
+              </select>
+            </label>
+            <label>
+              <span>量化精度</span>
+              <select id="quantizeGridSelect">
+                <option value="1">1/4 音符</option>
+                <option value="0.5">1/8 音符</option>
+                <option value="0.25" selected>1/16 音符</option>
+                <option value="0.125">1/32 音符</option>
+              </select>
+            </label>
+            <label>
+              <span>音头跳过 ms</span>
+              <input id="manualAttackInput" type="number" min="0" max="180" value="80">
+            </label>
+            <label>
+              <span>采样窗口 ms</span>
+              <input id="manualWindowInput" type="number" min="160" max="900" value="420">
+            </label>
+          </div>
+          <label class="toggle-row">
+            <input id="polishToggle" type="checkbox" checked>
+            <span>智能润色</span>
+          </label>
+          <label class="toggle-row">
+            <input id="quantizeToggle" type="checkbox" checked>
+            <span>节奏量化</span>
+          </label>
+          <label class="toggle-row">
+            <input id="harmonyToggle" type="checkbox" checked>
+            <span>智能配和弦</span>
+          </label>
+        </section>
+      </aside>
+
+      <section class="main-stage">
+        <section class="visual-panel" data-pages="record detect">
+          <div class="panel-heading">
+            <h2>波形</h2>
+            <span id="keyLabel">调性未识别</span>
+          </div>
+          <canvas id="waveCanvas" class="wave-canvas"></canvas>
+        </section>
+
+        <section class="visual-panel piano-panel" data-pages="detect harmony export">
+          <div class="panel-heading">
+            <h2>音符预览</h2>
+            <span id="rangeLabel">-</span>
+          </div>
+          <canvas id="pianoCanvas" class="piano-canvas"></canvas>
+        </section>
+
+        <section class="action-panel" data-pages="detect harmony export">
+          <button id="analyzeBtn" class="primary" data-pages="detect">生成 MIDI</button>
+          <button id="quantizeNowBtn" data-pages="detect" disabled>按节拍量化</button>
+          <button id="keySnapBtn" data-pages="detect" disabled>按调性修正</button>
+          <button id="keyUndoBtn" data-pages="detect" disabled>撤销调性修正</button>
+          <button id="midiPlayBtn" data-pages="detect harmony export" disabled>试听 MIDI</button>
+          <button id="playBtn" data-pages="detect export" disabled>试听音频</button>
+          <a id="downloadLink" class="download disabled" data-pages="export" href="#" download="hum-melody.mid">下载 MIDI</a>
+          <div class="result-summary" id="resultSummary" data-pages="detect harmony export">等待音频</div>
+          <div class="chord-strip" id="chordStrip" data-pages="harmony export">和弦未生成</div>
+          <div class="note-editor" id="noteEditor" data-pages="detect" hidden>
+            <span id="noteEditLabel">未选中音符</span>
+            <label>
+              <span>音高</span>
+              <select id="notePitchSelect"></select>
+            </label>
+            <label>
+              <span>起点/拍</span>
+              <input id="noteStartBeatInput" type="number" min="0" step="0.25" value="0">
+            </label>
+            <label>
+              <span>长度/拍</span>
+              <input id="noteDurationBeatInput" type="number" min="0.125" step="0.25" value="1">
+            </label>
+            <label>
+              <span>力度</span>
+              <input id="noteVelocityInput" type="number" min="1" max="127" value="90">
+            </label>
+            <button id="noteOctaveDownBtn" type="button">降八度</button>
+            <button id="noteDownBtn" type="button">降半音</button>
+            <button id="noteUpBtn" type="button">升半音</button>
+            <button id="noteOctaveUpBtn" type="button">升八度</button>
+            <button id="noteApplyBtn" type="button" class="primary">应用</button>
+            <button id="noteDeleteBtn" type="button">删除</button>
+          </div>
+          <div class="chord-editor" id="chordEditor" data-pages="harmony" hidden>
+            <span id="chordEditLabel">-</span>
+            <select id="chordSelect"></select>
+          </div>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <script src="piano.js?v=20260621-keysnap"></script>
+  <script src="app.js?v=20260621-keysnap"></script>
+</body>
+</html>
