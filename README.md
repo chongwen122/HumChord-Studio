@@ -1,268 +1,282 @@
 # HumChord Studio
 
-HumChord Studio is a local humming-to-MIDI workstation. It records or imports a hummed melody, converts it into editable MIDI notes, can quantize the rhythm, snap notes to a key, generate simple chord accompaniment, preview the result with a local piano sound, and export a MIDI file.
+HumChord Studio 是一个本地运行的哼唱转 MIDI 工作台。它可以录制或导入哼唱旋律，把音频识别成可编辑的 MIDI 音符，并支持节拍量化、按调性修正、钢琴卷帘手动编辑、智能配和弦、网页试听和 MIDI 导出。
 
-The current recognition path uses Spotify Basic Pitch with ONNX Runtime, then refines humming pitch with a monophonic pYIN track. Everything runs locally on your computer; no audio is uploaded to a cloud service.
+当前识别链路使用 Spotify 开源模型 Basic Pitch，通过 ONNX Runtime 在本机运行；随后再用单声部 pYIN 音高轨迹对哼唱音高做二次校准。所有音频都在本机处理，不会上传到云端。
 
-## Features
+## 主要功能
 
-- Record humming in the browser or import an existing audio file.
-- Use a metronome with custom BPM and time signature.
-- Optional Space marker mode: press `Space` once for every syllable or note while recording.
-- Convert audio to MIDI with Basic Pitch + pYIN pitch correction.
-- Edit MIDI notes in a piano roll.
-- Click or modify a note to preview it with the local piano sound.
-- Move selected notes by semitone or octave.
-- Quantize note starts and ends to `1/4`, `1/8`, `1/16`, or `1/32` grids.
-- Detect a likely key and optionally force all out-of-key notes into the selected key.
-- Generate simple chord accompaniment and manually change individual chords.
-- Preview the melody and chord MIDI in the browser.
-- Export the final MIDI file.
+- 在浏览器里录制哼唱，或导入已有音频。
+- 支持自定义 BPM 和拍号的节拍器。
+- 默认开启 Space 手动分音：录音时每唱一个字或一个音按一次 `Space`。
+- 使用 Basic Pitch + pYIN 把哼唱转换成 MIDI。
+- 在钢琴卷帘里编辑 MIDI 音符。
+- 点击或修改音符时自动试听该音符。
+- 支持升降半音、升降八度。
+- 支持 `1/4`、`1/8`、`1/16`、`1/32` 网格量化。
+- 自动推测调性，也可以手动选择调性。
+- 支持把所有调外音强制修正到当前调内音。
+- 自动生成简单和弦伴奏，并支持手动修改单个和弦。
+- 使用本地钢琴音源试听旋律和和弦。
+- 导出最终 MIDI 文件。
 
-## Requirements
+## 运行环境
 
-Windows is the currently tested platform.
+目前主要在 Windows 上测试。
 
-You need:
+你需要：
 
-- Python 3.12 or a compatible recent Python 3 version
+- Python 3.12 或相近版本的 Python 3
 - PowerShell
-- A modern browser such as Chrome or Edge
-- Internet access for the first dependency installation
-- A microphone, audio interface, or imported audio file
+- Chrome / Edge 等现代浏览器
+- 第一次安装依赖时需要联网
+- 麦克风、声卡输入，或已有音频文件
 
-The app is started through `localhost`, because browser microphone recording requires a secure local origin. Do not open `web/index.html` directly by double-clicking it.
+浏览器录音需要通过 `localhost` 打开页面。不要直接双击 `web/index.html`，否则麦克风权限和本地识别接口可能无法正常工作。
 
-## Download
+## 下载项目
 
-Clone the repository:
+使用 Git 克隆：
 
 ```powershell
 git clone https://github.com/chongwen122/HumChord-Studio.git
 cd HumChord-Studio
 ```
 
-Or download the repository as a ZIP from GitHub, unzip it, and open PowerShell in the extracted folder.
+也可以在 GitHub 页面点击 `Code` -> `Download ZIP`，下载后解压，然后在解压后的文件夹里打开 PowerShell。
 
-## First-Time Setup
+## 第一次安装
 
-Install the local recognition engine:
+第一次使用前，先安装本地识别引擎：
 
 ```powershell
 .\web\install_engine.ps1
 ```
 
-This creates or reuses `.venv`, then installs:
+这个脚本会创建或复用 `.venv`，并安装：
 
 - Basic Pitch
 - ONNX Runtime
 - librosa
 - pretty-midi
 - scipy / scikit-learn
-- other required audio packages
+- 其他音频处理依赖
 
-The script installs Basic Pitch without pulling an incompatible TensorFlow build on Python 3.12. This is intentional. The app uses the ONNX model instead.
+脚本会安装 ONNX Runtime 版 Basic Pitch，避免在 Python 3.12 下拉取不兼容的旧 TensorFlow。这是正常设计，不是缺依赖。
 
-If PowerShell blocks the script, run:
+如果 PowerShell 阻止脚本运行，可以先执行：
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-Then run `.\web\install_engine.ps1` again.
+然后重新运行：
 
-## Start the App
+```powershell
+.\web\install_engine.ps1
+```
 
-Run:
+## 启动应用
+
+运行：
 
 ```powershell
 .\web\serve.ps1
 ```
 
-Then open:
+然后在浏览器打开：
 
 ```text
 http://localhost:8765/
 ```
 
-Keep the PowerShell window open while using the app. To stop the app, press `Ctrl+C` in that window.
+使用过程中请保持 PowerShell 窗口打开。想停止应用时，在 PowerShell 窗口按 `Ctrl+C`。
 
-When the local engine is available, the page will show a Basic Pitch / ONNX status. If the local engine is unavailable, the web page can fall back to the built-in browser worker, but accuracy will usually be lower.
+如果本地引擎可用，页面会显示 Basic Pitch / ONNX 状态。如果本地引擎不可用，网页会退回内置浏览器识别引擎，但准确率通常会低一些。
 
-## Basic Workflow
+## 基本使用流程
 
-1. Open `http://localhost:8765/`.
-2. Choose BPM and time signature.
-3. Leave key as `自动识别` for free key detection, or choose a fixed key before recording.
-4. Record humming or import audio.
-5. Click `生成 MIDI`.
-6. Review the piano roll in `识别修音`.
-7. Edit wrong notes manually if needed.
-8. Click `按节拍量化` if the rhythm should lock to the selected grid.
-9. Click `按调性修正` if you want all out-of-key notes snapped into the current key.
-10. Open `和弦编配` to generate or edit chords.
-11. Open `试听导出`, preview the result, then download the MIDI.
+1. 打开 `http://localhost:8765/`。
+2. 设置 BPM 和拍号。
+3. 调性可以保持 `自动识别`，也可以在录音前手动选择固定调性。
+4. 点击开始录音，或导入已有音频。
+5. 点击 `生成 MIDI`。
+6. 在 `识别修音` 页查看钢琴卷帘。
+7. 如果有错音，可以手动修改音高、起点、长度和力度。
+8. 如果节奏需要对齐，点击 `按节拍量化`。
+9. 如果想把所有调外音修到调内，点击 `按调性修正`。
+10. 在 `和弦编配` 页生成或修改和弦。
+11. 在 `试听导出` 页试听并下载 MIDI。
 
-## Recording Tips
+## 录音建议
 
-For best pitch recognition:
+为了提高识别准确率：
 
-- Hum one clear melody line at a time.
-- Avoid background music while recording.
-- Stay close to the microphone but avoid clipping.
-- Use the metronome if you care about rhythm alignment.
-- Use Space marker mode for lyrics, syllables, or separated notes.
-- Hold each note a little after pressing Space so the stable pitch can be analyzed.
-- Avoid very breathy attacks when possible.
+- 尽量只唱一条清晰旋律线。
+- 录音时不要同时播放伴奏或原曲。
+- 麦克风离嘴近一些，但不要爆音。
+- 如果在意节奏，请开启节拍器跟着唱。
+- 如果是带歌词、按字唱、或每个音比较分明，建议开启 Space 手动分音。
+- 按下 Space 后，尽量把该音保持一小段时间，方便系统分析稳定音高。
+- 尽量减少特别重的气声、喷麦和滑入音。
 
-## Space Marker Mode
+## Space 手动分音
 
-Space marker mode is enabled by default.
+Space 手动分音默认开启。
 
-During recording, press `Space` once for each sung syllable or note. The app tries to keep one valid Space marker as one MIDI note.
+录音时，每唱一个字、一个音，按一次 `Space`。系统会尽量保持一个有效 Space 标记对应一个 MIDI 音符。
 
-If a marker window does not contain a stable pitch, the app creates a low-confidence placeholder note instead of dropping the marker. You can then fix that note in the piano roll.
+如果某个 Space 标记窗口里没有检测到足够稳定的音高，系统不会直接丢掉这个标记，而是生成一个低置信度占位音。你可以之后在钢琴卷帘里手动修改它。
 
-Very close repeated Space presses within about `80ms` are treated as accidental double taps and filtered.
+如果两次 Space 间隔小于约 `80ms`，系统会认为这是误触或连击抖动，并自动过滤。
 
-Useful settings:
+相关参数：
 
-- `音头跳过 ms`: skips the attack after pressing Space. Default is `80ms`.
-- `采样窗口 ms`: the stable pitch window after the attack. Default is `420ms`.
+- `音头跳过 ms`：按下 Space 后跳过一小段音头，默认 `80ms`。
+- `采样窗口 ms`：跳过音头后用于分析稳定音高的窗口，默认 `420ms`。
 
-## Key Detection and Key Correction
+## 调性识别和按调性修正
 
-The app first detects pitch freely, then estimates a likely key from the whole melody.
+系统会先自由识别音高，然后根据整段旋律推测调性。
 
-Key detection gives more weight to:
+调性判断会更重视：
 
-- longer notes
-- phrase endings
-- stable pYIN pitch
-- notes with higher confidence
+- 长音
+- 句尾音
+- pYIN 判断稳定的音高
+- 置信度较高的音
 
-Short transition notes and noisy fragments have less influence.
+短促的滑音、过渡音、噪声碎片对调性判断的影响会更小。
 
-`按调性修正` forces every out-of-key note into the current key. It does not only fix weak notes. The correction first checks the original-audio pYIN pitch for that note, then snaps to the nearest in-key MIDI note. If no pYIN pitch is available, it uses the current MIDI pitch.
+`按调性修正` 会强制把所有调外音修正到当前调内音。它不是只修短音或弱音。
 
-Use `撤销调性修正` if the chosen key is wrong or if you want to keep chromatic passing notes.
+修正时会优先查看该音符从原始音频得到的 pYIN 稳定音高，然后吸附到离这个原始音高最近的调内 MIDI 音。如果没有 pYIN 音高，才会退回使用当前 MIDI 音高。
 
-## Rhythm Quantization
+如果自动调性判断不对，可以先在调性下拉框里手动选择正确调性，再点击 `按调性修正`。
 
-The quantize button snaps each note start and end to the nearest selected grid:
+如果修正后不满意，可以点击 `撤销调性修正`。
+
+## 节拍量化
+
+`按节拍量化` 会把每个音符的起点和终点分别吸附到最近的网格位置。
+
+可选网格：
 
 - `1/4`
 - `1/8`
 - `1/16`
 - `1/32`
 
-This is based on the selected BPM, time signature, and recorded beat offset. It is most useful when you recorded with the built-in metronome.
+量化基于当前 BPM、拍号和录音时的节拍器偏移。如果录音时跟着内置节拍器唱，量化效果会更稳定。
 
-## Manual MIDI Editing
+## MIDI 手动编辑
 
-In the piano roll:
+在钢琴卷帘里可以：
 
-- Click a note block to select and preview it.
-- Change pitch from the pitch selector.
-- Change start beat, duration, or velocity.
-- Use semitone and octave buttons for quick pitch edits.
-- Delete wrong notes.
+- 点击音符块选中并试听。
+- 修改音高。
+- 修改起点拍数。
+- 修改长度拍数。
+- 修改力度。
+- 升半音 / 降半音。
+- 升八度 / 降八度。
+- 删除错误音符。
 
-Every edit refreshes the MIDI preview and download link.
+每次修改后，试听和下载的 MIDI 都会自动刷新。
 
-## Chord Generation
+## 智能配和弦
 
-`智能配和弦` generates a simple chord track from the detected melody and key.
+`智能配和弦` 会根据识别出的旋律和调性生成简单和弦轨。
 
-The current chord engine is rule-based and focuses on practical triad accompaniment. It scores candidate chords with:
+当前和弦算法以实用三和弦为主，会综合考虑：
 
-- melody note fit
-- strong beat and long note emphasis
-- phrase ending support
-- simple voice leading
-- common borrowed or secondary-dominant style candidates
+- 旋律音和和弦音的匹配度
+- 强拍音和长音
+- 句尾音
+- 简单声部连接
+- 常见借用和弦和副属和弦候选
 
-You can choose chord rhythm:
+可以选择和弦变化密度：
 
-- one chord per bar
-- one chord per half bar
+- 一小节一个和弦
+- 半小节一个和弦
 
-After generation, click a chord chip and choose a different chord manually.
+生成后，可以点击和弦 chip，然后在下拉框里手动修改单个和弦。
 
-## MIDI Preview and Export
+## MIDI 试听和导出
 
-The app includes a small local piano sound module in `web/piano.js`. It does not download an online SoundFont.
+项目内置一个小体量本地钢琴音源模块：`web/piano.js`。它不需要联网下载 SoundFont。
 
-Use `试听 MIDI` to hear the generated melody and chord track. Use `下载 MIDI` to export the final `.mid` file for your DAW.
+点击 `试听 MIDI` 可以听旋律和和弦轨。点击 `下载 MIDI` 可以导出最终 `.mid` 文件，再放进 DAW 或编曲软件继续处理。
 
-## Audio Interface and Voicemeeter Notes
+## 外置声卡和 Voicemeeter
 
-If you use an external audio interface:
+如果使用 USB 麦克风或外置声卡：
 
-- Select the correct input in `麦克风输入`.
-- Click `刷新` if the device was plugged in after the page opened.
-- Make sure the browser has microphone permission.
+- 在 `麦克风输入` 下拉框里选择正确输入。
+- 插入设备后如果没出现，点击 `刷新`。
+- 确认浏览器已经允许麦克风权限。
 
-If you use Voicemeeter:
+如果使用 Voicemeeter：
 
-- In the web app, choose `VoiceMeeter Output` or `VoiceMeeter Aux Output` as the microphone input.
-- In Voicemeeter, route the real microphone channel to `B1`.
-- `A1` is usually for physical monitor output, not browser recording input.
+- 网页里的麦克风输入通常选择 `VoiceMeeter Output` 或 `VoiceMeeter Aux Output`。
+- Voicemeeter 里真实麦克风通道需要推到 `B1`。
+- `A1` 通常是物理监听输出，不是浏览器录音输入。
 
-If the interface is ASIO-only, the browser may not see the ASIO input directly. Route the input through Voicemeeter or a WDM/MME device that the browser can access.
+如果声卡只开了 ASIO 输入，浏览器通常不能直接读取 ASIO。可以通过 Voicemeeter 或声卡的 WDM/MME 输入通道转给浏览器。
 
-## Troubleshooting
+## 常见问题
 
-### The page opens, but recording does not work
+### 页面能打开，但不能录音
 
-- Use `http://localhost:8765/`, not a direct file path.
-- Check browser microphone permission.
-- Click `刷新` beside the input selector.
-- Close other apps that may be holding the microphone.
-- Try the system default input first.
+- 确认地址是 `http://localhost:8765/`，不是本地文件路径。
+- 检查浏览器麦克风权限。
+- 点击输入设备旁边的 `刷新`。
+- 关闭可能占用麦克风的软件。
+- 先试试系统默认输入。
 
-### The local engine is not available
+### 本地识别引擎不可用
 
-Run:
+重新运行：
 
 ```powershell
 .\web\install_engine.ps1
 .\web\serve.ps1
 ```
 
-If dependency installation fails, make sure Python is installed and available from PowerShell:
+如果依赖安装失败，先确认 Python 可用：
 
 ```powershell
 python --version
 ```
 
-### Recognition has too many notes
+### 识别出来的音太多
 
-- Enable Space marker mode.
-- Increase `最短 ms`.
-- Use `按节拍量化`.
-- Delete obvious short fragments in the editor.
+- 开启 Space 手动分音。
+- 提高 `最短 ms`。
+- 使用 `按节拍量化`。
+- 在钢琴卷帘里删除明显短碎音。
 
-### Recognition has too few notes
+### 识别出来的音太少
 
-- Use Space marker mode and press once per syllable/note.
-- Lower `最短 ms`.
-- Sing notes slightly longer.
-- Increase microphone input level.
+- 开启 Space 手动分音，并每个字/音按一次 Space。
+- 降低 `最短 ms`。
+- 每个音唱得稍微长一点。
+- 提高麦克风输入音量。
 
-### The key is wrong
+### 调性判断不准
 
-- Manually choose the key before clicking `按调性修正`.
-- Use `撤销调性修正` if the automatic key estimate was wrong.
-- For songs with many borrowed notes, avoid forcing key correction too early.
+- 在调性下拉框里手动选择正确调性。
+- 再点击 `按调性修正`。
+- 如果歌曲里有很多经过音、转调或借用音，不建议过早强制调性修正。
 
-### MIDI playback is silent
+### MIDI 没声音
 
-- Click the page once so the browser can start audio.
-- Try `试听 MIDI` again.
-- Check system output volume.
+- 先点击一下页面，让浏览器允许音频播放。
+- 再点击 `试听 MIDI`。
+- 检查系统输出音量。
 
-## Repository Contents
+## 仓库结构
 
 ```text
 README.md
@@ -277,21 +291,21 @@ web/
   install_engine.ps1
 ```
 
-Ignored local files include:
+以下内容不会上传到仓库：
 
 - `.venv/`
 - `dist/`
 - `test/`
-- generated MIDI / WAV / ZIP files
+- 生成的 MIDI / WAV / ZIP 文件
 
-## License Notes
+## 开源模型说明
 
-HumChord Studio uses Basic Pitch as the local recognition model. Basic Pitch is an open-source project from Spotify under the Apache-2.0 license.
+HumChord Studio 使用 Spotify 的 Basic Pitch 作为本地识别模型。Basic Pitch 是 Apache-2.0 许可证的开源项目。
 
-Project page:
+项目地址：
 
 ```text
 https://github.com/spotify/basic-pitch
 ```
 
-This repository does not include Melodyne, does not bypass any Melodyne authorization, and does not depend on Melodyne.
+本项目不包含 Melodyne，不绕过 Melodyne 授权，也不依赖 Melodyne。
