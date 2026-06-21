@@ -460,6 +460,9 @@ def notes_from_markers(
             "end": max(marker + min_duration, end),
             "velocity": chosen_velocity,
             "confidence": chosen_confidence,
+            "markerStart": marker,
+            "markerIndex": index,
+            "manualMarker": True,
         }
         if not best and not pitch_estimate:
             item["markerFallback"] = True

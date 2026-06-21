@@ -121,6 +121,8 @@ function sanitizeImportedNotes(inputNotes) {
     .map((note) => {
       const start = Math.max(0, Number(note.start) || 0);
       const end = Math.max(start + 0.03, Number(note.end) || start + 0.18);
+      const markerStart = note.markerStart == null ? null : Number(note.markerStart);
+      const markerIndex = note.markerIndex == null ? null : Number(note.markerIndex);
       return {
         note: noteMidiValue(note),
         start,
@@ -130,6 +132,9 @@ function sanitizeImportedNotes(inputNotes) {
         pyinMidi: Number.isFinite(Number(note.pyinMidi)) ? Number(note.pyinMidi) : null,
         pyinConfidence: Number(note.pyinConfidence) || 0,
         rawBasicPitchNote: Number.isFinite(Number(note.rawBasicPitchNote)) ? Number(note.rawBasicPitchNote) : null,
+        markerStart: Number.isFinite(markerStart) ? markerStart : null,
+        markerIndex: Number.isFinite(markerIndex) ? Math.round(markerIndex) : null,
+        manualMarker: note.manualMarker === true || Number.isFinite(markerStart),
         audioConfidence: Math.max(Number(note.confidence) || 0, Number(note.pyinConfidence) || 0),
         audioAgreement: Number(note.pyinConfidence) || Number(note.confidence) || 0,
         audioOctaveSupport: Number(note.pyinConfidence) || Number(note.confidence) || 0,
@@ -853,12 +858,14 @@ function markersToNotes(pitches, rms, duration, settings, allowed = null, eviden
         audioOctaveSupport: fallback?.audioOctaveSupport ?? 0,
         start,
         end: Math.max(start + minDuration, end),
+        markerStart: start,
+        markerIndex: i,
       });
       if (fallback) {
         previousNote = fallback.note;
       }
     } else {
-      slots.push({ ...note, start, end: Math.max(start + minDuration, end) });
+      slots.push({ ...note, start, end: Math.max(start + minDuration, end), markerStart: start, markerIndex: i });
       previousNote = note.note;
     }
   }
@@ -1101,6 +1108,9 @@ function completeManualNoteSlots(slots, allowed) {
         octaveAmbiguity: slot.octaveAmbiguity ?? 1,
         audioAgreement: slot.audioAgreement ?? 0,
         audioOctaveSupport: slot.audioOctaveSupport ?? 0,
+        markerStart: slot.markerStart ?? slot.start,
+        markerIndex: slot.markerIndex ?? index,
+        manualMarker: true,
       };
     }
     const previous = findRecognizedSlot(slots, index, -1);
@@ -1120,6 +1130,9 @@ function completeManualNoteSlots(slots, allowed) {
       octaveAmbiguity: 1,
       audioAgreement: 0,
       audioOctaveSupport: 0,
+      markerStart: slot.markerStart ?? slot.start,
+      markerIndex: slot.markerIndex ?? index,
+      manualMarker: true,
     };
   });
 }
@@ -1672,14 +1685,87 @@ function melodicScore(note, previous, next) {
 function quantizeTiming(notes, settings) {
   const grid = quantizeGridSeconds(settings);
   const offset = settings.beatOffsetSeconds || 0;
-  return notes.map((note) => {
-    const start = snapToGrid(note.start, grid, offset);
-    let end = snapToGrid(note.end, grid, offset);
+  if (!hasManualTiming(notes, settings)) {
+    return notes.map((note) => {
+      const start = snapToGrid(note.start, grid, offset);
+      let end = snapToGrid(note.end, grid, offset);
+      if (end <= start) {
+        end = start + grid;
+      }
+      return { ...note, start: Math.max(0, start), end: Math.max(0, end) };
+    });
+  }
+
+  const ordered = notes
+    .map((note, index) => ({
+      note,
+      index,
+      sourceStart: manualOnsetSource(note, index, settings),
+    }))
+    .sort((a, b) => a.sourceStart - b.sourceStart || a.index - b.index);
+
+  let previousTick = -Infinity;
+  const snapped = ordered.map((item) => {
+    const desiredTick = gridTick(item.sourceStart, grid, offset);
+    const tick = Math.max(desiredTick, previousTick + 1);
+    previousTick = tick;
+    return {
+      ...item,
+      tick,
+      start: gridTime(tick, grid, offset),
+    };
+  });
+
+  return snapped.map((item, index) => {
+    const next = snapped[index + 1];
+    const start = Math.max(0, item.start);
+    let end = next ? Math.max(start + 0.03, next.start) : snapToGrid(item.note.end, grid, offset);
     if (end <= start) {
       end = start + grid;
     }
-    return { ...note, start: Math.max(0, start), end: Math.max(0, end) };
+    return {
+      ...item.note,
+      start,
+      end: Math.max(start + 0.03, end),
+      markerStart: manualOnsetSource(item.note, item.index, settings),
+      markerIndex: item.note.markerIndex != null && Number.isFinite(Number(item.note.markerIndex))
+        ? Math.round(Number(item.note.markerIndex))
+        : item.index,
+      manualMarker: true,
+    };
   });
+}
+
+function hasManualTiming(notes, settings) {
+  return Boolean(
+    settings.manualMarkers?.length
+    || notes.some((note) => note.markerStart != null && Number.isFinite(Number(note.markerStart)) || note.manualMarker === true),
+  );
+}
+
+function manualOnsetSource(note, index, settings) {
+  if (note.markerStart != null && Number.isFinite(Number(note.markerStart))) {
+    return Math.max(0, Number(note.markerStart));
+  }
+  const markerIndex = note.markerIndex != null && Number.isFinite(Number(note.markerIndex)) ? Math.round(Number(note.markerIndex)) : index;
+  if (Array.isArray(settings.manualMarkers) && Number.isFinite(Number(settings.manualMarkers[markerIndex]))) {
+    return Math.max(0, Number(settings.manualMarkers[markerIndex]));
+  }
+  if (Array.isArray(settings.manualMarkers) && Number.isFinite(Number(settings.manualMarkers[index]))) {
+    return Math.max(0, Number(settings.manualMarkers[index]));
+  }
+  return Math.max(0, Number(note.start) || 0);
+}
+
+function gridTick(time, gridSeconds, offsetSeconds = 0) {
+  if (!Number.isFinite(time) || !Number.isFinite(gridSeconds) || gridSeconds <= 0) {
+    return 0;
+  }
+  return Math.round((time - offsetSeconds) / gridSeconds);
+}
+
+function gridTime(tick, gridSeconds, offsetSeconds = 0) {
+  return Math.max(0, offsetSeconds + tick * gridSeconds);
 }
 
 function quantizeGridSeconds(settings) {
@@ -1705,13 +1791,13 @@ function generateChords(notes, key, settings, duration) {
   if (!notes.length || !key) {
     return [];
   }
-  const palette = chordPaletteForKey(key);
+  const palette = chordPaletteForKey(key, settings);
   const scale = allowedPitchClasses(key);
-  const segments = buildHarmonySegments(notes, settings, duration).filter((segment) => segment.profile.total >= 0.035);
+  const segments = buildHarmonySegments(notes, settings, duration).filter((segment) => segment.profile.total >= 0.018 || segment.isPhraseStart || segment.isPhraseEnd);
   if (!segments.length) {
     return [];
   }
-  const path = chooseChordPath(segments, palette, key, scale);
+  const path = chooseChordPath(segments, palette, key, scale, settings);
   const chords = [];
   let previousVoicing = null;
 
@@ -1733,24 +1819,25 @@ function generateChords(notes, key, settings, duration) {
     previousVoicing = voicing;
   }
 
-  return chords;
+  return mergeAdjacentChords(chords);
 }
 
 function buildHarmonySegments(notes, settings, duration) {
   const beatSeconds = 60 / settings.tempo;
   const barSeconds = beatSeconds * settings.sigTop;
-  const segmentSeconds = settings.harmonyGrid === "bar"
-    ? barSeconds
-    : Math.max(beatSeconds, barSeconds * 0.5);
+  const segmentSeconds = chordGridSeconds(settings);
   const offset = clampNumber(settings.beatOffsetSeconds || 0, 0, Math.max(0, beatSeconds - 0.001));
   const endTime = Math.max(duration || 0, ...notes.map((note) => note.end));
   const segments = [];
   for (let start = offset, index = 0; start < endTime - 0.02; start += segmentSeconds, index += 1) {
     const end = Math.min(endTime, start + segmentSeconds);
+    const boundaryStrength = beatStrengthAt(start, settings);
     segments.push({
       index,
       start,
       end,
+      boundaryStrength,
+      isPhraseStart: isPhraseStart(notes, start, beatSeconds),
       isDownbeat: isNearDownbeat(start, settings),
       isPhraseEnd: isPhraseEnd(notes, end, beatSeconds, endTime),
       profile: segmentPitchProfile(notes, start, end, settings),
@@ -1759,7 +1846,7 @@ function buildHarmonySegments(notes, settings, duration) {
   return segments;
 }
 
-function chordPaletteForKey(key) {
+function chordPaletteForKey(key, settings = {}) {
   const majorDegrees = [0, 2, 4, 5, 7, 9, 11];
   const minorDegrees = [0, 2, 3, 5, 7, 8, 10];
   const majorQualities = ["maj", "min", "min", "maj", "maj", "min", "dim"];
@@ -1778,17 +1865,36 @@ function chordPaletteForKey(key) {
   for (const chord of borrowed) {
     candidates.push(makeChordCandidate(chord));
   }
+  for (const chord of extendedColorChords(key, settings)) {
+    candidates.push(makeChordCandidate(chord));
+  }
   return uniqueChordCandidates(candidates);
 }
 
 function makeChordCandidate({ root, degree, quality, functionType, source, penalty }) {
   const intervals = chordIntervals(quality);
-  const pitchClasses = intervals.map((interval) => (root + interval) % 12);
+  const pitchClasses = [...new Set(intervals.map((interval) => (root + interval) % 12))];
   const pitchClassSet = new Set(pitchClasses);
   const roleByPitchClass = new Array(12).fill("");
-  roleByPitchClass[pitchClasses[0]] = "root";
-  roleByPitchClass[pitchClasses[1]] = "third";
-  roleByPitchClass[pitchClasses[2]] = "fifth";
+  intervals.forEach((interval) => {
+    const normalized = ((interval % 12) + 12) % 12;
+    const pc = (root + interval) % 12;
+    if (normalized === 0) {
+      roleByPitchClass[pc] = "root";
+    } else if (normalized === 3 || normalized === 4) {
+      roleByPitchClass[pc] = "third";
+    } else if (normalized === 6 || normalized === 7) {
+      roleByPitchClass[pc] = "fifth";
+    } else if (normalized === 9) {
+      roleByPitchClass[pc] = "sixth";
+    } else if (normalized === 10 || normalized === 11) {
+      roleByPitchClass[pc] = "seventh";
+    } else if (normalized === 2) {
+      roleByPitchClass[pc] = "ninth";
+    } else if (normalized === 5) {
+      roleByPitchClass[pc] = "suspension";
+    }
+  });
   return {
     root,
     degree,
@@ -1832,6 +1938,38 @@ function minorColorChords(tonic) {
   ];
 }
 
+function extendedColorChords(key, settings) {
+  const tonic = key.tonic;
+  const density = settings.arrangementDensity || "normal";
+  const sparsePenalty = density === "light" ? 0.55 : density === "dense" ? -0.2 : 0;
+  if (key.mode === "minor") {
+    return [
+      { root: tonic, degree: 300, quality: "min7", functionType: "tonic", source: "extension", penalty: 0.8 + sparsePenalty },
+      { root: (tonic + 3) % 12, degree: 302, quality: "maj7", functionType: "tonic", source: "extension", penalty: 1.0 + sparsePenalty },
+      { root: (tonic + 5) % 12, degree: 303, quality: "min7", functionType: "predominant", source: "extension", penalty: 0.9 + sparsePenalty },
+      { root: (tonic + 7) % 12, degree: 304, quality: "7", functionType: "dominant", source: "harmonic", penalty: 0.65 + sparsePenalty },
+      { root: (tonic + 8) % 12, degree: 305, quality: "maj7", functionType: "predominant", source: "extension", penalty: 1.1 + sparsePenalty },
+      { root: (tonic + 10) % 12, degree: 306, quality: "7", functionType: "dominant", source: "extension", penalty: 1.2 + sparsePenalty },
+      { root: tonic, degree: 307, quality: "sus4", functionType: "tonic", source: "suspension", penalty: 1.4 + sparsePenalty },
+      { root: tonic, degree: 308, quality: "add9", functionType: "tonic", source: "extension", penalty: 1.35 + sparsePenalty },
+    ];
+  }
+  return [
+    { root: tonic, degree: 300, quality: "maj7", functionType: "tonic", source: "extension", penalty: 0.82 + sparsePenalty },
+    { root: tonic, degree: 301, quality: "add9", functionType: "tonic", source: "extension", penalty: 1.1 + sparsePenalty },
+    { root: tonic, degree: 309, quality: "6", functionType: "tonic", source: "extension", penalty: 0.42 + sparsePenalty * 0.35 },
+    { root: tonic, degree: 310, quality: "6add9", functionType: "tonic", source: "extension", penalty: 0.66 + sparsePenalty * 0.45 },
+    { root: (tonic + 2) % 12, degree: 301, quality: "min7", functionType: "predominant", source: "extension", penalty: 0.9 + sparsePenalty },
+    { root: (tonic + 4) % 12, degree: 302, quality: "min7", functionType: "tonic", source: "extension", penalty: 1.2 + sparsePenalty },
+    { root: (tonic + 5) % 12, degree: 303, quality: "maj7", functionType: "predominant", source: "extension", penalty: 0.9 + sparsePenalty },
+    { root: (tonic + 5) % 12, degree: 309, quality: "6", functionType: "predominant", source: "extension", penalty: 1.15 + sparsePenalty },
+    { root: (tonic + 5) % 12, degree: 304, quality: "add9", functionType: "predominant", source: "extension", penalty: 1.25 + sparsePenalty },
+    { root: (tonic + 7) % 12, degree: 305, quality: "7", functionType: "dominant", source: "extension", penalty: 0.62 + sparsePenalty },
+    { root: (tonic + 7) % 12, degree: 306, quality: "sus4", functionType: "dominant", source: "suspension", penalty: 1.15 + sparsePenalty },
+    { root: (tonic + 9) % 12, degree: 307, quality: "min7", functionType: "tonic", source: "extension", penalty: 0.95 + sparsePenalty },
+  ];
+}
+
 function uniqueChordCandidates(candidates) {
   const seen = new Set();
   return candidates.filter((candidate) => {
@@ -1851,12 +1989,26 @@ function chordFunction(degree) {
 function chordIntervals(quality) {
   if (quality === "min") return [0, 3, 7];
   if (quality === "dim") return [0, 3, 6];
+  if (quality === "7") return [0, 4, 7, 10];
+  if (quality === "maj7") return [0, 4, 7, 11];
+  if (quality === "min7") return [0, 3, 7, 10];
+  if (quality === "sus4") return [0, 5, 7];
+  if (quality === "add9") return [0, 4, 7, 14];
+  if (quality === "6") return [0, 4, 7, 9];
+  if (quality === "6add9") return [0, 4, 7, 9, 14];
   return [0, 4, 7];
 }
 
 function chordName(root, quality) {
   if (quality === "min") return `${NOTE_NAMES[root]}m`;
   if (quality === "dim") return `${NOTE_NAMES[root]}dim`;
+  if (quality === "7") return `${NOTE_NAMES[root]}7`;
+  if (quality === "maj7") return `${NOTE_NAMES[root]}maj7`;
+  if (quality === "min7") return `${NOTE_NAMES[root]}m7`;
+  if (quality === "sus4") return `${NOTE_NAMES[root]}sus4`;
+  if (quality === "add9") return `${NOTE_NAMES[root]}add9`;
+  if (quality === "6") return `${NOTE_NAMES[root]}6`;
+  if (quality === "6add9") return `${NOTE_NAMES[root]}6add9`;
   return NOTE_NAMES[root];
 }
 
@@ -1976,9 +2128,9 @@ function isArpeggioTone(previous, current, next) {
   return from >= 3 && from <= 7 && to >= 3 && to <= 7;
 }
 
-function chooseChordPath(segments, palette, key, scale) {
+function chooseChordPath(segments, palette, key, scale, settings) {
   const localScores = segments.map((segment, index) => (
-    palette.map((chord) => scoreChordForSegment(chord, segment, index, segments.length, key, scale))
+    palette.map((chord) => scoreChordForSegment(chord, segment, index, segments.length, key, scale, settings))
   ));
   const dp = localScores.map(() => new Array(palette.length).fill(-Infinity));
   const back = localScores.map(() => new Array(palette.length).fill(0));
@@ -1992,7 +2144,7 @@ function chooseChordPath(segments, palette, key, scale) {
       let bestPrevious = 0;
       for (let previousIndex = 0; previousIndex < palette.length; previousIndex += 1) {
         const score = dp[index - 1][previousIndex]
-          + transitionScore(palette[previousIndex], palette[chordIndex], segments[index - 1], segments[index])
+          + transitionScore(palette[previousIndex], palette[chordIndex], segments[index - 1], segments[index], settings)
           + localScores[index][chordIndex];
         if (score > bestScore) {
           bestScore = score;
@@ -2017,10 +2169,200 @@ function chooseChordPath(segments, palette, key, scale) {
     path[index] = palette[cursor];
     cursor = back[index][cursor];
   }
-  return path;
+  return applyPhraseTemplates(path, segments, palette, localScores, key, settings);
 }
 
-function scoreChordForSegment(chord, segment, index, segmentCount, key, scale) {
+function applyPhraseTemplates(path, segments, palette, localScores, key, settings) {
+  if (segments.length < 3 || settings.harmonyGrid === "bar") {
+    return path;
+  }
+  const refined = [...path];
+  const templates = phraseTemplatesForKey(key, settings);
+  const maxLength = Math.min(settings.arrangementDensity === "light" ? 4 : 8, segments.length);
+  for (let start = 0; start < segments.length - 2; start += 1) {
+    if (start > 0 && !segments[start].isPhraseStart && start % 2 !== 0) {
+      continue;
+    }
+    for (const template of templates) {
+      const length = template.degrees.length;
+      if (length > maxLength || start + length > segments.length) {
+        continue;
+      }
+      const candidate = template.degrees.map((degree, offset) => bestTemplateChordForSegment(
+        palette,
+        localScores[start + offset],
+        key,
+        degree,
+        settings,
+      ));
+      if (candidate.some((chord) => !chord)) {
+        continue;
+      }
+      const currentSlice = refined.slice(start, start + length);
+      const currentScore = windowPathScore(refined, currentSlice, segments, palette, localScores, start, settings);
+      const candidateScore = windowPathScore(refined, candidate, segments, palette, localScores, start, settings)
+        + template.bonus * templateStrength(segments, start, length, settings)
+        - phraseStartTemplatePenalty(candidate, segments, palette, localScores, start, key, settings);
+      const margin = settings.arrangementDensity === "dense" ? 0.45 : settings.arrangementDensity === "light" ? 1.15 : 0.75;
+      if (candidateScore > currentScore + margin) {
+        for (let offset = 0; offset < length; offset += 1) {
+          refined[start + offset] = candidate[offset];
+        }
+        start += Math.max(0, length - 2);
+        break;
+      }
+    }
+  }
+  return refined;
+}
+
+function phraseStartTemplatePenalty(candidate, segments, palette, localScores, start, key, settings) {
+  const segment = segments[start];
+  if (!segment || (!segment.isPhraseStart && start !== 0)) {
+    return 0;
+  }
+  const first = candidate[0];
+  if (!first || scaleDegreeForRoot(first.root, key) === 0) {
+    return 0;
+  }
+  const tonic = bestTemplateChordForSegment(palette, localScores[start], key, 0, settings);
+  if (!tonic) {
+    return 0.35;
+  }
+  const firstIndex = palette.indexOf(first);
+  const tonicIndex = palette.indexOf(tonic);
+  const firstScore = firstIndex >= 0 ? localScores[start][firstIndex] : -Infinity;
+  const tonicScore = tonicIndex >= 0 ? localScores[start][tonicIndex] : -Infinity;
+  if (tonicScore >= firstScore - 1.1) {
+    return settings.arrangementDensity === "dense" ? 0.75 : 1.35;
+  }
+  return 0.35;
+}
+
+function phraseTemplatesForKey(key, settings) {
+  const style = settings.arrangementStyle || "pop";
+  const popBonus = style === "pop" ? 1.18 : style === "ballad" ? 0.94 : 1.02;
+  const base = commonProgressionTemplates([
+    ["4536251", 2.85, "IV-V-iii-vi-ii-V-I"],
+    ["1645", 2.35 * popBonus, "I-vi-IV-V"],
+    ["6415", 2.05 * popBonus, "vi-IV-I-V"],
+    ["1564", 2.15 * popBonus, "I-V-vi-IV"],
+    ["1451", 2.05, "I-IV-V-I"],
+    ["251", style === "ballad" ? 2.35 : 1.85, "ii-V-I"],
+    ["451", 1.75, "IV-V-I"],
+    ["456", 1.45, "IV-V-vi"],
+    ["1625", 2.0, "I-vi-ii-V"],
+    ["3625", 1.9, "iii-vi-ii-V"],
+    ["6251", 1.95, "vi-ii-V-I"],
+    ["2516", 1.55, "ii-V-I-vi"],
+    ["4361", 1.48, "IV-iii-vi-I"],
+    ["4536", 1.55, "IV-V-iii-vi"],
+    ["6451", 1.72 * popBonus, "vi-IV-V-I"],
+    ["4561", 1.62, "IV-V-vi-I"],
+  ]);
+  if (key.mode === "minor") {
+    return [
+      ...commonProgressionTemplates([
+        ["1645", style === "pop" ? 1.75 : 1.35, "i-VI-iv-V"],
+        ["6415", 1.55, "VI-iv-i-V"],
+        ["1564", 1.48, "i-V-VI-iv"],
+        ["451", 1.35, "iv-V-i"],
+        ["6251", 1.36, "VI-ii-V-i"],
+        ["4536251", 1.65, "iv-V-III-VI-ii-V-i"],
+      ]),
+      ...base.filter((item) => item.degrees.length <= 4).map((item) => ({ ...item, bonus: item.bonus * 0.68 })),
+    ];
+  }
+  return base;
+}
+
+function commonProgressionTemplates(entries) {
+  return entries
+    .map(([pattern, bonus, label]) => ({
+      pattern,
+      label,
+      degrees: numericProgressionDegrees(pattern),
+      bonus,
+    }))
+    .filter((item) => item.degrees.length >= 3);
+}
+
+function numericProgressionDegrees(pattern) {
+  return String(pattern)
+    .split("")
+    .map((char) => Number(char) - 1)
+    .filter((degree) => Number.isInteger(degree) && degree >= 0 && degree <= 6);
+}
+
+function bestTemplateChordForSegment(palette, localScores, key, degree, settings) {
+  let best = null;
+  let bestScore = -Infinity;
+  for (let index = 0; index < palette.length; index += 1) {
+    const chord = palette[index];
+    if (scaleDegreeForRoot(chord.root, key) !== degree) {
+      continue;
+    }
+    if (chord.quality === "dim" || chord.source === "borrowed" || chord.source === "secondary") {
+      continue;
+    }
+    let score = localScores[index] + templateChordPreference(chord, degree, settings);
+    if (score > bestScore) {
+      best = chord;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function scaleDegreeForRoot(root, key) {
+  const degrees = key.mode === "minor" ? [0, 2, 3, 5, 7, 8, 10] : [0, 2, 4, 5, 7, 9, 11];
+  const interval = (root - key.tonic + 12) % 12;
+  return degrees.indexOf(interval);
+}
+
+function templateChordPreference(chord, degree, settings) {
+  let score = 0;
+  const density = settings.arrangementDensity || "normal";
+  if (chord.source === "diatonic") score += 0.45;
+  if (density === "light" && chord.pitchClasses.length > 3) score -= 0.55;
+  if (density === "dense" && chord.pitchClasses.length > 3) score += 0.18;
+  if (degree === 4 && chord.quality === "7") score += 0.45;
+  if (degree === 0 && ["maj7", "min7", "add9", "6", "6add9"].includes(chord.quality) && settings.arrangementStyle === "ballad") score += 0.35;
+  if (chord.quality === "sus4") score -= degree === 4 ? 0.05 : 0.55;
+  return score;
+}
+
+function windowPathScore(fullPath, slice, segments, palette, localScores, start, settings) {
+  let score = 0;
+  for (let offset = 0; offset < slice.length; offset += 1) {
+    const segmentIndex = start + offset;
+    const chordIndex = palette.indexOf(slice[offset]);
+    score += chordIndex >= 0 ? localScores[segmentIndex][chordIndex] : -20;
+    if (offset > 0) {
+      score += transitionScore(slice[offset - 1], slice[offset], segments[segmentIndex - 1], segments[segmentIndex], settings);
+    }
+  }
+  if (start > 0) {
+    score += transitionScore(fullPath[start - 1], slice[0], segments[start - 1], segments[start], settings) * 0.72;
+  }
+  const after = start + slice.length;
+  if (after < fullPath.length) {
+    score += transitionScore(slice[slice.length - 1], fullPath[after], segments[after - 1], segments[after], settings) * 0.72;
+  }
+  return score;
+}
+
+function templateStrength(segments, start, length, settings) {
+  const first = segments[start];
+  const last = segments[start + length - 1];
+  let strength = 1;
+  if (first.isPhraseStart || first.isDownbeat) strength += 0.22;
+  if (last.isPhraseEnd) strength += 0.28;
+  if (settings.arrangementDensity === "light") strength += 0.18;
+  return strength;
+}
+
+function scoreChordForSegment(chord, segment, index, segmentCount, key, scale, settings) {
   const profile = segment.profile;
   let score = 0;
   for (let pc = 0; pc < 12; pc += 1) {
@@ -2074,6 +2416,12 @@ function scoreChordForSegment(chord, segment, index, segmentCount, key, scale) {
   if (segment.isDownbeat && (chord.degree === 0 || chord.degree === 3 || chord.degree === 4 || chord.degree === 5)) {
     score += 0.35;
   }
+  score += chordStyleScore(chord, segment, settings);
+  if (segment.isPhraseStart) {
+    if (chord.functionType === "tonic") score += 0.72;
+    if (chord.functionType === "predominant") score += 0.22;
+    if (chord.quality === "dim") score -= 0.8;
+  }
   if (index === 0) {
     if (chord.degree === 0) score += 0.9;
     if (chord.degree === 4) score += 0.45;
@@ -2082,21 +2430,26 @@ function scoreChordForSegment(chord, segment, index, segmentCount, key, scale) {
   if (segment.isPhraseEnd) {
     if (chord.degree === 0) score += 1.25;
     if (chord.degree === 4) score += 0.6;
+    if (chord.quality === "sus4") score -= 1.35;
   }
   if (index === segmentCount - 1) {
-    if (chord.degree === 0) score += 4.0;
-    if (profile.finalPc === key.tonic && chord.degree === 0) score += 2.2;
-    if (chord.degree !== 0) score -= 1.1;
+    if (chord.functionType === "tonic") score += 2.4;
+    if (chord.degree === 0) score += 4.8;
+    if (profile.finalPc === key.tonic && chord.degree === 0) score += 3.8;
+    if (chord.functionType === "dominant") score -= 2.4;
+    if (chord.degree !== 0) score -= 2.1;
+    if (chord.quality === "sus4") score -= 2.6;
   }
-  score -= chord.penalty || 0;
+  score -= (chord.penalty || 0) + chordComplexityPenalty(chord, settings, profile);
   if (chord.source !== "diatonic") {
     const chromaticSupport = chordChromaticSupport(profile, chord, scale);
     const thirdSupport = chordThirdSupport(profile, chord);
-    score += chromaticSupport * 3.2;
+    const extensionOnly = chord.source === "extension" || chord.source === "suspension";
+    score += extensionOnly ? chromaticSupport * 0.8 : chromaticSupport * 3.2;
     if (coverage < 0.74) {
       score -= 2.0;
     }
-    if (chromaticSupport < 0.22) {
+    if (!extensionOnly && chromaticSupport < 0.22) {
       score -= chord.color === 2 ? 2.6 : 1.9;
     }
     if (scale && !scale.has(chord.pitchClasses[1]) && thirdSupport < 0.16) {
@@ -2108,8 +2461,62 @@ function scoreChordForSegment(chord, segment, index, segmentCount, key, scale) {
     if (chord.source === "borrowed" && chord.pitchClasses.filter((pc) => profile.anchorWeights[pc] > 0).length < 2) {
       score -= 1.6;
     }
+    if (chord.source === "extension" || chord.source === "suspension") {
+      const colorSupport = chordColorToneSupport(profile, chord, scale);
+      score += colorSupport * 2.6;
+      if (colorSupport < 0.08 && settings.arrangementDensity !== "dense") {
+        score -= 1.1;
+      }
+    }
   }
   return score;
+}
+
+function chordStyleScore(chord, segment, settings) {
+  const style = settings.arrangementStyle || "pop";
+  const density = settings.arrangementDensity || "normal";
+  let score = 0;
+  if (style === "ballad") {
+    if (["maj7", "min7", "add9", "6", "6add9"].includes(chord.quality)) score += density === "light" ? 0.15 : 0.55;
+    if (chord.quality === "7" && chord.functionType !== "dominant") score -= 0.35;
+    if (chord.quality === "dim") score -= 0.75;
+    if (segment.isPhraseEnd && chord.functionType === "tonic") score += 0.35;
+  } else if (style === "arpeggio") {
+    if (["maj7", "min7", "add9", "6", "6add9"].includes(chord.quality)) score += density === "dense" ? 0.38 : 0.24;
+    if (chord.quality === "sus4" && chord.functionType !== "dominant") score -= 0.3;
+    if (chord.quality === "dim") score -= 0.55;
+  } else {
+    if (["maj", "min"].includes(chord.quality)) score += density === "light" ? 0.45 : 0.2;
+    if (chord.quality === "7" && chord.functionType === "dominant") score += 0.34;
+    if (chord.quality === "sus4" && chord.functionType === "dominant" && !segment.isPhraseEnd) score += 0.28;
+    if (["maj7", "add9", "6add9"].includes(chord.quality) && density === "light") score -= 0.25;
+  }
+  if (chord.degree === 0 && ["6", "6add9"].includes(chord.quality)) {
+    score += style === "pop" ? 0.44 : 0.28;
+  }
+  return score;
+}
+
+function chordComplexityPenalty(chord, settings, profile) {
+  const hasExtension = chord.pitchClasses.length > 3 || ["7", "maj7", "min7", "sus4", "add9", "6", "6add9"].includes(chord.quality);
+  if (!hasExtension) {
+    return 0;
+  }
+  const density = settings.arrangementDensity || "normal";
+  const base = density === "dense" ? 0.2 : density === "light" ? 1.05 : 0.55;
+  const anchorCoverage = chordAnchorCoverage(profile, chord);
+  return Math.max(0, base - anchorCoverage * 0.55);
+}
+
+function chordColorToneSupport(profile, chord, scale) {
+  let support = 0;
+  for (const pc of chord.pitchClasses) {
+    const role = chord.roleByPitchClass[pc];
+    if (role === "sixth" || role === "seventh" || role === "ninth" || role === "suspension" || (scale && !scale.has(pc))) {
+      support += profile.anchorWeights[pc] + profile.strongWeights[pc] * 0.45 + profile.endingWeights[pc] * 0.3;
+    }
+  }
+  return support / Math.max(0.001, profile.anchorTotal + profile.strongTotal * 0.45 + profile.endingTotal * 0.3);
 }
 
 function chordAnchorCoverage(profile, chord) {
@@ -2157,11 +2564,13 @@ function chordCoverage(profile, chord) {
   return covered / Math.max(0.001, total);
 }
 
-function transitionScore(previous, next, previousSegment, segment) {
-  if (previous.degree === next.degree) {
-    return 0.65;
-  }
+function transitionScore(previous, next, previousSegment, segment, settings) {
   let score = 0;
+  const same = sameChord(previous, next);
+  if (same) {
+    return settings.arrangementDensity === "dense" ? 0.28 : settings.arrangementDensity === "light" ? 1.15 : 0.72;
+  }
+  score -= harmonicSwitchPenalty(settings, segment);
   const commonTones = next.pitchClasses.filter((pc) => previous.pitchClassSet.has(pc)).length;
   score += commonTones * 0.5;
   const rootMotion = (next.root - previous.root + 12) % 12;
@@ -2178,6 +2587,7 @@ function transitionScore(previous, next, previousSegment, segment) {
   if (previous.functionType === "dominant" && next.functionType === "predominant") score -= 0.9;
   if (previous.degree === 3 && next.degree === 4) score += 0.55;
   if (previous.degree === 4 && next.degree === 0) score += 1.15;
+  score += commonProgressionScore(previous, next, segment);
   if (previous.targetRoot !== null) {
     if (next.root === previous.targetRoot) {
       score += previous.source === "secondary" ? 2.4 : 1.4;
@@ -2203,11 +2613,48 @@ function transitionScore(previous, next, previousSegment, segment) {
   return score;
 }
 
+function sameChord(previous, next) {
+  return previous.root === next.root && previous.quality === next.quality;
+}
+
+function harmonicSwitchPenalty(settings, segment) {
+  const density = settings.arrangementDensity || "normal";
+  let penalty = density === "dense" ? 0.35 : density === "light" ? 1.45 : 0.78;
+  if (settings.harmonyGrid === "bar" || settings.harmonyGrid === "half") {
+    penalty *= 0.55;
+  }
+  if (segment.boundaryStrength >= 1.75 || segment.isPhraseStart) {
+    penalty *= 0.62;
+  } else if (segment.boundaryStrength < 1.15) {
+    penalty *= 1.35;
+  }
+  return penalty;
+}
+
+function commonProgressionScore(previous, next, segment) {
+  let score = 0;
+  const motion = (next.root - previous.root + 12) % 12;
+  if (previous.functionType === "tonic" && next.functionType === "tonic" && motion === 9) score += 0.6; // I -> vi
+  if (previous.functionType === "tonic" && next.functionType === "predominant" && motion === 5) score += 0.65; // I -> IV
+  if (previous.functionType === "predominant" && next.functionType === "dominant") score += 0.8; // ii/IV -> V
+  if (previous.functionType === "dominant" && next.functionType === "tonic") score += segment.isPhraseEnd ? 1.45 : 0.95;
+  if (previous.degree === 5 && next.degree === 3) score += 0.42; // vi -> IV pop loop
+  if (previous.degree === 3 && next.degree === 0) score += 0.25; // IV -> I plagal
+  if (previous.degree === 4 && next.degree === 5) score += 0.32; // V -> vi deceptive
+  if (previous.source === "suspension" && next.root === previous.root && next.source !== "suspension") score += 1.05;
+  if (previous.quality === "sus4" && next.root === previous.root && (next.quality === "maj" || next.quality === "7")) score += 1.25;
+  return score;
+}
+
 function chordToneWeight(chord, pc) {
   const role = chord.roleByPitchClass[pc];
   if (role === "third") return 5.35;
   if (role === "root") return 5.05;
   if (role === "fifth") return 4.45;
+  if (role === "sixth") return 3.7;
+  if (role === "seventh") return 3.65;
+  if (role === "ninth") return 3.25;
+  if (role === "suspension") return 3.45;
   return 4.2;
 }
 
@@ -2247,6 +2694,23 @@ function isNearDownbeat(time, settings) {
   return position < 0.12 || settings.sigTop - position < 0.12;
 }
 
+function isPhraseStart(notes, time, beatSeconds) {
+  let previousEnd = -Infinity;
+  let nextStart = Infinity;
+  for (const note of notes) {
+    if (note.end <= time + 0.04) {
+      previousEnd = Math.max(previousEnd, note.end);
+    }
+    if (note.start >= time - 0.04) {
+      nextStart = Math.min(nextStart, note.start);
+    }
+  }
+  if (!Number.isFinite(nextStart)) {
+    return false;
+  }
+  return !Number.isFinite(previousEnd) || nextStart - previousEnd >= beatSeconds * 0.55;
+}
+
 function isPhraseEnd(notes, time, beatSeconds, endTime) {
   if (time >= endTime - 0.03) {
     return true;
@@ -2265,9 +2729,12 @@ function isPhraseEnd(notes, time, beatSeconds, endTime) {
 }
 
 function voiceChord(chord, previousVoicing) {
-  const choices = chord.pitchClasses.map((pc) => {
+  const pitchClasses = chord.pitchClasses.slice(0, chord.pitchClasses.length > 4 ? 4 : chord.pitchClasses.length);
+  const choices = pitchClasses.map((pc, index) => {
     const notes = [];
-    for (let midi = 38; midi <= 69; midi += 1) {
+    const min = index === 0 ? 38 : 46;
+    const max = index === 0 ? 58 : 74;
+    for (let midi = min; midi <= max; midi += 1) {
       if (midi % 12 === pc) {
         notes.push(midi);
       }
@@ -2276,33 +2743,42 @@ function voiceChord(chord, previousVoicing) {
   });
   let best = null;
   let bestScore = Infinity;
-  for (const a of choices[0]) {
-    for (const b of choices[1]) {
-      for (const c of choices[2]) {
-        const voicing = [...new Set([a, b, c])].sort((left, right) => left - right);
-        if (voicing.length < 3) {
-          continue;
-        }
-        const span = voicing[2] - voicing[0];
-        if (span > 19 || voicing[0] < 40 || voicing[2] > 67) {
-          continue;
-        }
-        const average = (voicing[0] + voicing[1] + voicing[2]) / 3;
-        let score = span * 0.18 + Math.abs(average - 54) * 0.12;
-        if (voicing[0] % 12 !== chord.root) {
-          score += 0.4;
-        }
-        if (previousVoicing?.length) {
-          score += voicingDistance(voicing, previousVoicing) * 0.18;
-        }
-        if (score < bestScore) {
-          best = voicing;
-          bestScore = score;
-        }
+  const search = (index, selected) => {
+    if (index >= choices.length) {
+      const voicing = [...new Set(selected)].sort((left, right) => left - right);
+      if (voicing.length < Math.min(3, pitchClasses.length)) {
+        return;
       }
+      const span = voicing[voicing.length - 1] - voicing[0];
+      if (span > 26 || voicing[0] < 36 || voicing[voicing.length - 1] > 76) {
+        return;
+      }
+      const average = voicing.reduce((sum, note) => sum + note, 0) / voicing.length;
+      let score = span * 0.16 + Math.abs(average - 56) * 0.11 + Math.abs(voicing[0] - midiForPitchClassNear(chord.root, 42)) * 0.045;
+      if (voicing[0] % 12 !== chord.root) {
+        score += 0.62;
+      }
+      if (chord.pitchClasses.length > 3) {
+        score += Math.max(0, voicing.length - 3) * 0.18;
+      }
+      if (previousVoicing?.length) {
+        score += voicingDistance(voicing, previousVoicing) * 0.17;
+      }
+      if (score < bestScore) {
+        best = voicing;
+        bestScore = score;
+      }
+      return;
     }
+    for (const note of choices[index]) {
+      search(index + 1, [...selected, note]);
+    }
+  };
+  search(0, []);
+  if (best) {
+    return best;
   }
-  return best || chord.pitchClasses.map((pc) => midiForPitchClassNear(pc, 54)).sort((a, b) => a - b);
+  return pitchClasses.map((pc, index) => midiForPitchClassNear(pc, index === 0 ? 42 : 58)).sort((a, b) => a - b);
 }
 
 function voicingDistance(a, b) {
@@ -2352,6 +2828,10 @@ function writeMidi(notes, settings, chords = []) {
   if (chords.length) {
     tracks.push(buildChordTrack(chords, settings));
   }
+  const arrangement = buildArrangementNotes(chords, settings);
+  if (arrangement.length) {
+    tracks.push(buildNoteTrack("Auto Arrangement", arrangement, settings, 2, false));
+  }
 
   const bytes = [];
   pushString(bytes, "MThd");
@@ -2365,6 +2845,142 @@ function writeMidi(notes, settings, chords = []) {
     bytes.push(...track);
   }
   return new Uint8Array(bytes);
+}
+
+function buildArrangementNotes(chords, settings) {
+  if (!settings.arrangement || !Array.isArray(chords) || !chords.length) {
+    return [];
+  }
+  const style = ["pop", "arpeggio", "ballad"].includes(settings.arrangementStyle)
+    ? settings.arrangementStyle
+    : "pop";
+  const density = ["light", "normal", "dense"].includes(settings.arrangementDensity)
+    ? settings.arrangementDensity
+    : "normal";
+  const beatSeconds = 60 / Math.max(30, settings.tempo || 120);
+  const gridSeconds = chordGridSeconds(settings);
+  const notes = [];
+  for (const chord of chords) {
+    const start = snapToGrid(chord.start, gridSeconds, settings.beatOffsetSeconds || 0);
+    const end = alignedChordEnd(chord, start, gridSeconds, settings.beatOffsetSeconds || 0);
+    if (end - start < 0.08) {
+      continue;
+    }
+    const voicing = arrangementVoicing(chord);
+    if (style === "arpeggio") {
+      appendArpeggioArrangement(notes, chord, voicing, start, end, beatSeconds, density);
+    } else if (style === "ballad") {
+      appendBalladArrangement(notes, chord, voicing, start, end, beatSeconds, settings, density);
+    } else {
+      appendPopArrangement(notes, chord, voicing, start, end, beatSeconds, settings, density);
+    }
+  }
+  return notes.sort((a, b) => a.start - b.start || a.note - b.note);
+}
+
+function arrangementVoicing(chord) {
+  const pitchClasses = chord.notes?.length
+    ? [...new Set(chord.notes.map((note) => ((note % 12) + 12) % 12))]
+    : chordIntervals(chord.quality || "maj").map((interval) => ((chord.root || 0) + interval) % 12);
+  const root = Number.isFinite(chord.root) ? chord.root : pitchClasses[0] || 0;
+  const bassRoot = midiForPitchClassNear(root, 38);
+  const bassFifth = midiForPitchClassNear((root + 7) % 12, 43);
+  const mid = pitchClasses.map((pc) => normalizeArrangementMidi(midiForPitchClassNear(pc, 58), 52, 72));
+  const high = pitchClasses.map((pc) => normalizeArrangementMidi(midiForPitchClassNear(pc, 66), 60, 79));
+  return {
+    bassRoot,
+    bassFifth,
+    mid: uniqueSorted(mid),
+    high: uniqueSorted(high),
+  };
+}
+
+function appendPopArrangement(output, chord, voicing, start, end, beatSeconds, settings, density) {
+  const sigTop = Math.max(1, settings.sigTop || 4);
+  const midpoint = Math.floor(sigTop / 2);
+  for (let beatIndex = 0, time = start; time < end - 0.035; beatIndex += 1, time += beatSeconds) {
+    const beatInBar = beatIndex % sigTop;
+    const isStrong = beatInBar === 0 || (sigTop >= 4 && beatInBar === midpoint);
+    if (isStrong || density === "dense") {
+      const bass = beatInBar === midpoint ? voicing.bassFifth : voicing.bassRoot;
+      appendArrangementNote(output, bass, time, beatSeconds * (density === "dense" ? 0.42 : 0.72), 58, end);
+    }
+    if (density === "light") {
+      if (isStrong) {
+        appendChordStack(output, voicing.mid, time, beatSeconds * 0.84, 47, end, 0.008);
+      }
+      continue;
+    }
+    appendChordStack(output, voicing.mid, time, beatSeconds * 0.46, 50, end, 0.006);
+    if (density === "dense") {
+      appendChordStack(output, voicing.high, time, beatSeconds * 0.32, 43, end, 0.004);
+    }
+  }
+}
+
+function appendArpeggioArrangement(output, chord, voicing, start, end, beatSeconds, density) {
+  const stepBeats = density === "dense" ? 0.25 : (density === "light" ? 1 : 0.5);
+  const step = beatSeconds * stepBeats;
+  const pattern = density === "light"
+    ? [voicing.bassRoot, ...voicing.mid]
+    : [voicing.bassRoot, voicing.mid[0], voicing.mid[1], voicing.mid[2], voicing.high[1] || voicing.mid[1], voicing.high[2] || voicing.mid[2]];
+  for (let index = 0, time = start; time < end - 0.035; index += 1, time += step) {
+    const note = pattern[index % pattern.length];
+    const velocity = note < 48 ? 55 : (density === "dense" ? 45 : 49);
+    appendArrangementNote(output, note, time, step * 0.88, velocity, end);
+  }
+}
+
+function appendBalladArrangement(output, chord, voicing, start, end, beatSeconds, settings, density) {
+  const sigTop = Math.max(1, settings.sigTop || 4);
+  const midpoint = Math.floor(sigTop / 2);
+  for (let beatIndex = 0, time = start; time < end - 0.035; beatIndex += 1, time += beatSeconds) {
+    const beatInBar = beatIndex % sigTop;
+    if (beatInBar === 0 || (sigTop >= 4 && beatInBar === midpoint)) {
+      const bass = beatInBar === midpoint ? voicing.bassFifth : voicing.bassRoot;
+      appendArrangementNote(output, bass, time, beatSeconds * 0.92, 52, end);
+    }
+    const chordTime = time;
+    appendChordStack(output, voicing.mid, chordTime, beatSeconds * (density === "light" ? 1.05 : 0.78), 45, end, 0.026);
+    if (density === "dense") {
+      appendArrangementNote(output, voicing.high[1] || voicing.mid[1], time, beatSeconds * 0.24, 39, end);
+    }
+  }
+}
+
+function appendChordStack(output, notes, start, duration, velocity, clipEnd, rollSeconds = 0) {
+  notes.forEach((note, index) => {
+    const rolledStart = start + index * rollSeconds;
+    appendArrangementNote(output, note, rolledStart, Math.max(0.05, duration - index * rollSeconds), velocity - index * 2, clipEnd);
+  });
+}
+
+function appendArrangementNote(output, note, start, duration, velocity, clipEnd) {
+  if (!Number.isFinite(note) || !Number.isFinite(start) || !Number.isFinite(duration) || duration <= 0 || start >= clipEnd - 0.025) {
+    return;
+  }
+  const end = Math.min(clipEnd, start + duration);
+  if (end - start < 0.025) {
+    return;
+  }
+  output.push({
+    note: clampInt(note, 0, 127),
+    start,
+    end,
+    velocity: clampInt(velocity, 1, 127),
+  });
+}
+
+function normalizeArrangementMidi(note, min, max) {
+  let midi = note;
+  while (midi < min) midi += 12;
+  while (midi > max) midi -= 12;
+  return clampInt(midi, 0, 127);
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter((value) => Number.isFinite(value)).map((value) => clampInt(value, 0, 127)))]
+    .sort((a, b) => a - b);
 }
 
 function buildChordTrack(chords, settings) {
@@ -2388,7 +3004,26 @@ function buildChordTrack(chords, settings) {
 function chordGridSeconds(settings) {
   const beatSeconds = 60 / settings.tempo;
   const barSeconds = beatSeconds * settings.sigTop;
-  return settings.harmonyGrid === "bar" ? barSeconds : Math.max(beatSeconds, barSeconds * 0.5);
+  if (settings.harmonyGrid === "bar") {
+    return barSeconds;
+  }
+  if (settings.harmonyGrid === "half") {
+    return Math.max(beatSeconds, barSeconds * 0.5);
+  }
+  return adaptiveHarmonyFrameSeconds(settings);
+}
+
+function adaptiveHarmonyFrameSeconds(settings) {
+  const beatSeconds = 60 / Math.max(30, settings.tempo || 120);
+  const barSeconds = beatSeconds * Math.max(1, settings.sigTop || 4);
+  const density = settings.arrangementDensity || "normal";
+  if (density === "light") {
+    return barSeconds;
+  }
+  if (density === "dense") {
+    return beatSeconds;
+  }
+  return Math.max(beatSeconds, barSeconds * 0.5);
 }
 
 function alignedChordEnd(chord, chordStart, gridSeconds, beatOffsetSeconds) {

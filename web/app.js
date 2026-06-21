@@ -37,6 +37,11 @@ const state = {
   nextBeatTime: 0,
   beatIndex: 0,
   midiUrl: null,
+  midiUrls: {
+    full: null,
+    melody: null,
+    accompaniment: null,
+  },
   piano: null,
   midiPlaying: false,
   midiPlaybackTimer: null,
@@ -54,7 +59,7 @@ const MINOR_SCALE = new Set([0, 2, 3, 5, 7, 8, 10]);
 const MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
 const MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.6, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
 const METRONOME_LEAD_IN_SECONDS = 0.08;
-const ASSET_VERSION = "20260621-keysnap";
+const ASSET_VERSION = "20260621-midi-click";
 const WORKFLOW_PAGES = new Set(["record", "detect", "harmony", "export"]);
 
 const els = {};
@@ -93,6 +98,9 @@ function init() {
     quantize: $("#quantizeToggle"),
     harmony: $("#harmonyToggle"),
     harmonyGrid: $("#harmonyGridSelect"),
+    arrangement: $("#arrangementToggle"),
+    arrangementStyle: $("#arrangementStyleSelect"),
+    arrangementDensity: $("#arrangementDensitySelect"),
     quantizeGrid: $("#quantizeGridSelect"),
     manualAttack: $("#manualAttackInput"),
     manualWindow: $("#manualWindowInput"),
@@ -106,9 +114,16 @@ function init() {
     keySnapBtn: $("#keySnapBtn"),
     keyUndoBtn: $("#keyUndoBtn"),
     midiPlayBtn: $("#midiPlayBtn"),
+    midiMetronome: $("#midiMetronomeToggle"),
     playBtn: $("#playBtn"),
     downloadLink: $("#downloadLink"),
+    downloadMelodyLink: $("#downloadMelodyLink"),
+    downloadAccompanimentLink: $("#downloadAccompanimentLink"),
     resultSummary: $("#resultSummary"),
+    harmonyEntry: $("#harmonyEntry"),
+    harmonyEntryText: $("#harmonyEntryText"),
+    harmonyEntryBtn: $("#harmonyEntryBtn"),
+    harmonyTabBadge: $("#harmonyTabBadge"),
     chordStrip: $("#chordStrip"),
     chordEditor: $("#chordEditor"),
     chordEditLabel: $("#chordEditLabel"),
@@ -123,6 +138,10 @@ function init() {
     noteDownBtn: $("#noteDownBtn"),
     noteUpBtn: $("#noteUpBtn"),
     noteOctaveUpBtn: $("#noteOctaveUpBtn"),
+    noteShiftLeftBtn: $("#noteShiftLeftBtn"),
+    noteShiftRightBtn: $("#noteShiftRightBtn"),
+    noteShortenBtn: $("#noteShortenBtn"),
+    noteLengthenBtn: $("#noteLengthenBtn"),
     noteApplyBtn: $("#noteApplyBtn"),
     noteDeleteBtn: $("#noteDeleteBtn"),
   });
@@ -143,7 +162,14 @@ function init() {
   els.keyUndoBtn.addEventListener("click", undoKeySnap);
   els.midiPlayBtn.addEventListener("click", toggleMidiPlayback);
   els.playBtn.addEventListener("click", playAudio);
+  [els.downloadLink, els.downloadMelodyLink, els.downloadAccompanimentLink].forEach((link) => {
+    link.addEventListener("click", preventDisabledDownload);
+  });
+  els.harmonyEntryBtn.addEventListener("click", openHarmonyPage);
   els.chordSelect.addEventListener("change", handleChordSelectChange);
+  els.arrangement.addEventListener("change", handleArrangementSettingsChange);
+  els.arrangementStyle.addEventListener("change", handleArrangementSettingsChange);
+  els.arrangementDensity.addEventListener("change", handleArrangementSettingsChange);
   els.pianoCanvas.addEventListener("click", handlePianoRollClick);
   els.notePitchSelect.addEventListener("change", applyNoteEditorChanges);
   els.noteStartBeat.addEventListener("change", applyNoteEditorChanges);
@@ -155,6 +181,10 @@ function init() {
   els.noteDownBtn.addEventListener("click", () => transposeSelectedNote(-1));
   els.noteOctaveUpBtn.addEventListener("click", () => transposeSelectedNote(12));
   els.noteOctaveDownBtn.addEventListener("click", () => transposeSelectedNote(-12));
+  els.noteShiftLeftBtn.addEventListener("click", () => shiftSelectedNoteBeats(-quantizeGridBeats()));
+  els.noteShiftRightBtn.addEventListener("click", () => shiftSelectedNoteBeats(quantizeGridBeats()));
+  els.noteShortenBtn.addEventListener("click", () => resizeSelectedNoteBeats(-quantizeGridBeats()));
+  els.noteLengthenBtn.addEventListener("click", () => resizeSelectedNoteBeats(quantizeGridBeats()));
   els.pageTabs.forEach((tab) => {
     tab.addEventListener("click", () => setWorkflowPage(tab.dataset.pageTab || "record"));
   });
@@ -200,6 +230,7 @@ function setWorkflowPage(page, updateHash = true) {
 }
 
 function renderWorkflowTools() {
+  renderHarmonyEntry();
   renderNoteEditor();
   renderChordEditor();
 }
@@ -1136,9 +1167,9 @@ async function toggleMidiPlayback() {
     const preview = buildMidiPreviewEvents();
     const startTime = audioContext.currentTime + 0.36;
     state.midiPlaying = true;
-    const endTime = startMidiPreviewScheduler(state.piano, startTime, preview.events, preview.endOffset);
+    const endTime = startMidiPreviewScheduler(state.piano, startTime, preview.events, preview.endOffset, preview.metronomeEvents);
     els.midiPlayBtn.textContent = "停止 MIDI";
-    setStatus("正在试听 MIDI");
+    setStatus(els.midiMetronome?.checked ? "正在试听 MIDI（节拍器开启）" : "正在试听 MIDI");
     const timeoutMs = Math.max(160, (endTime - audioContext.currentTime) * 1000 + 120);
     state.midiPlaybackTimer = window.setTimeout(() => {
       finishMidiPlayback();
@@ -1151,15 +1182,22 @@ async function toggleMidiPlayback() {
 }
 
 function collectMidiPreviewNotes() {
+  const settings = readSettings();
   const values = state.notes.map((note) => note.note);
-  for (const chord of state.chords) {
-    values.push(...chord.notes);
+  const arrangement = buildArrangementNotes(state.chords, settings);
+  if (arrangement.length) {
+    values.push(...arrangement.map((note) => note.note));
+  } else {
+    for (const chord of state.chords) {
+      values.push(...chord.notes);
+    }
   }
   return values;
 }
 
 function buildMidiPreviewEvents() {
   const events = [];
+  let musicEnd = 0;
   let endOffset = 0;
   const settings = readSettings();
   const gridSeconds = chordGridSeconds(settings);
@@ -1167,6 +1205,7 @@ function buildMidiPreviewEvents() {
   for (const note of state.notes) {
     const duration = Math.max(0.08, note.end - note.start);
     const start = Math.max(0, note.start - timeOrigin);
+    musicEnd = Math.max(musicEnd, start + duration);
     endOffset = Math.max(endOffset, start + duration + 0.7);
     events.push({
       start,
@@ -1179,43 +1218,93 @@ function buildMidiPreviewEvents() {
       },
     });
   }
-  for (const chord of state.chords) {
-    const chordStart = snapToGrid(chord.start, gridSeconds, settings.beatOffsetSeconds);
-    const chordEnd = alignedChordEnd(chord, chordStart, gridSeconds, settings.beatOffsetSeconds);
-    chord.notes.forEach((note, index) => {
-      const duration = Math.max(0.12, chordEnd - chordStart);
-      const start = Math.max(0, chordStart - timeOrigin);
+  const arrangement = buildArrangementNotes(state.chords, settings);
+  if (arrangement.length) {
+    for (const note of arrangement) {
+      const duration = Math.max(0.05, note.end - note.start);
+      const start = Math.max(0, note.start - timeOrigin);
+      musicEnd = Math.max(musicEnd, start + duration);
       endOffset = Math.max(endOffset, start + duration + 0.7);
       events.push({
         start,
-        note,
+        note: note.note,
         duration,
-        velocity: chord.velocity || 54,
+        velocity: note.velocity || 58,
         options: {
-          role: "chord",
-          pan: clampNumber((index - 1) * 0.08, -0.2, 0.2),
+          role: "arrangement",
+          gain: note.note < 48 ? 0.72 : 0.58,
+          pan: note.note < 48 ? -0.08 : 0.08,
+          disableReleaseNoise: true,
         },
       });
-    });
+    }
+  } else {
+    for (const chord of state.chords) {
+      const chordStart = snapToGrid(chord.start, gridSeconds, settings.beatOffsetSeconds);
+      const chordEnd = alignedChordEnd(chord, chordStart, gridSeconds, settings.beatOffsetSeconds);
+      chord.notes.forEach((note, index) => {
+        const duration = Math.max(0.12, chordEnd - chordStart);
+        const start = Math.max(0, chordStart - timeOrigin);
+        musicEnd = Math.max(musicEnd, start + duration);
+        endOffset = Math.max(endOffset, start + duration + 0.7);
+        events.push({
+          start,
+          note,
+          duration,
+          velocity: chord.velocity || 54,
+          options: {
+            role: "chord",
+            pan: clampNumber((index - 1) * 0.08, -0.2, 0.2),
+          },
+        });
+      });
+    }
   }
   const densePlayback = events.length > 120;
   for (const event of events) {
-    event.options.disableReleaseNoise = densePlayback || event.options.role === "chord";
+    event.options.disableReleaseNoise = event.options.disableReleaseNoise || densePlayback || event.options.role === "chord";
   }
-  events.sort((a, b) => a.start - b.start || (a.options.role === "chord" ? 1 : -1));
-  return { events, endOffset };
+  events.sort((a, b) => a.start - b.start || previewRoleOrder(a.options.role) - previewRoleOrder(b.options.role));
+  return {
+    events,
+    endOffset,
+    musicEnd,
+    metronomeEvents: buildMidiMetronomeEvents(settings, musicEnd),
+  };
+}
+
+function buildMidiMetronomeEvents(settings, musicEnd) {
+  const beatSeconds = 60 / Math.max(30, settings.tempo || 120);
+  const numerator = Math.max(1, settings.sigTop || 4);
+  const end = Math.max(0, musicEnd || 0);
+  const clicks = [];
+  for (let beat = 0, time = 0; time <= end + beatSeconds * 0.12; beat += 1, time += beatSeconds) {
+    clicks.push({
+      start: time,
+      accent: beat % numerator === 0,
+    });
+  }
+  return clicks;
+}
+
+function previewRoleOrder(role) {
+  if (role === "melody") return 0;
+  if (role === "arrangement") return 1;
+  return 2;
 }
 
 function musicTimeOrigin(settings) {
   return settings.alignMusicToFirstBeat === false ? 0 : settings.beatOffsetSeconds || 0;
 }
 
-function startMidiPreviewScheduler(piano, startTime, events, endOffset) {
+function startMidiPreviewScheduler(piano, startTime, events, endOffset, metronomeEvents = []) {
   clearMidiScheduler();
   const audioContext = piano.audioContext;
   let index = 0;
+  let clickIndex = 0;
   let queuedSoon = false;
   const lookAhead = events.length > 180 ? 1.45 : 1.1;
+  const clickLookAhead = 0.22;
   const intervalMs = 90;
   const maxPerTick = 90;
 
@@ -1225,6 +1314,7 @@ function startMidiPreviewScheduler(piano, startTime, events, endOffset) {
     }
     queuedSoon = false;
     const horizon = audioContext.currentTime + lookAhead;
+    const clickHorizon = audioContext.currentTime + clickLookAhead;
     let scheduled = 0;
     while (index < events.length && startTime + events[index].start <= horizon && scheduled < maxPerTick) {
       const event = events[index];
@@ -1232,7 +1322,15 @@ function startMidiPreviewScheduler(piano, startTime, events, endOffset) {
       index += 1;
       scheduled += 1;
     }
-    if (index >= events.length) {
+    while (clickIndex < metronomeEvents.length && startTime + metronomeEvents[clickIndex].start <= clickHorizon) {
+      const event = metronomeEvents[clickIndex];
+      const clickTime = startTime + event.start;
+      if (els.midiMetronome?.checked && clickTime >= audioContext.currentTime + 0.018) {
+        scheduleClick(audioContext, clickTime, event.accent, 0.72);
+      }
+      clickIndex += 1;
+    }
+    if (index >= events.length && clickIndex >= metronomeEvents.length) {
       clearMidiScheduler();
       return;
     }
@@ -1250,7 +1348,26 @@ function startMidiPreviewScheduler(piano, startTime, events, endOffset) {
 function chordGridSeconds(settings) {
   const beatSeconds = 60 / settings.tempo;
   const barSeconds = beatSeconds * settings.sigTop;
-  return settings.harmonyGrid === "bar" ? barSeconds : Math.max(beatSeconds, barSeconds * 0.5);
+  if (settings.harmonyGrid === "bar") {
+    return barSeconds;
+  }
+  if (settings.harmonyGrid === "half") {
+    return Math.max(beatSeconds, barSeconds * 0.5);
+  }
+  return adaptiveHarmonyFrameSeconds(settings);
+}
+
+function adaptiveHarmonyFrameSeconds(settings) {
+  const beatSeconds = 60 / Math.max(30, settings.tempo || 120);
+  const barSeconds = beatSeconds * Math.max(1, settings.sigTop || 4);
+  const density = settings.arrangementDensity || "normal";
+  if (density === "light") {
+    return barSeconds;
+  }
+  if (density === "dense") {
+    return beatSeconds;
+  }
+  return Math.max(beatSeconds, barSeconds * 0.5);
 }
 
 function alignedChordEnd(chord, chordStart, gridSeconds, beatOffsetSeconds) {
@@ -1379,12 +1496,12 @@ function startMetronome(audioContext) {
   }, 25);
 }
 
-function scheduleClick(audioContext, time, accent) {
+function scheduleClick(audioContext, time, accent, gainScale = 1) {
   const oscillator = audioContext.createOscillator();
   const gain = audioContext.createGain();
   oscillator.type = "sine";
   oscillator.frequency.setValueAtTime(accent ? 1700 : 1120, time);
-  gain.gain.setValueAtTime(accent ? 0.22 : 0.14, time);
+  gain.gain.setValueAtTime((accent ? 0.22 : 0.14) * gainScale, time);
   gain.gain.exponentialRampToValueAtTime(0.001, time + 0.04);
   oscillator.connect(gain);
   gain.connect(audioContext.destination);
@@ -1582,7 +1699,10 @@ function readSettings() {
     quantize: els.quantize.checked,
     quantizeGridBeats: quantizeGridBeats(),
     harmony: els.harmony.checked,
-    harmonyGrid: els.harmonyGrid.value === "bar" ? "bar" : "half",
+    harmonyGrid: ["adaptive", "bar", "half"].includes(els.harmonyGrid.value) ? els.harmonyGrid.value : "adaptive",
+    arrangement: els.arrangement.checked,
+    arrangementStyle: ["pop", "arpeggio", "ballad"].includes(els.arrangementStyle.value) ? els.arrangementStyle.value : "pop",
+    arrangementDensity: ["light", "normal", "dense"].includes(els.arrangementDensity.value) ? els.arrangementDensity.value : "normal",
     beatOffsetSeconds: state.beatOffsetSeconds,
     alignMusicToFirstBeat: true,
     lockedKey: selectedLockedKey(),
@@ -1599,7 +1719,7 @@ function readSettings() {
     manualScaleSnap: true,
     manualPitchStrict: false,
     autoKeySnap: false,
-    useSuggestedKeyForHarmony: false,
+    useSuggestedKeyForHarmony: true,
     noiseProfileSeconds: 0.5,
     targetSampleRate: 16000,
   };
@@ -1884,12 +2004,14 @@ function markersToNotes(pitches, rms, duration, settings, allowed = null) {
         velocity: fallback?.velocity ?? null,
         start,
         end: Math.max(start + minDuration, end),
+        markerStart: start,
+        markerIndex: i,
       });
       if (fallback) {
         previousNote = fallback.note;
       }
     } else {
-      slots.push({ ...note, start, end: Math.max(start + minDuration, end) });
+      slots.push({ ...note, start, end: Math.max(start + minDuration, end), markerStart: start, markerIndex: i });
       previousNote = note.note;
     }
   }
@@ -2041,6 +2163,9 @@ function completeManualNoteSlots(slots, allowed) {
         start: slot.start,
         end: slot.end,
         velocity: slot.velocity,
+        markerStart: slot.markerStart ?? slot.start,
+        markerIndex: slot.markerIndex ?? index,
+        manualMarker: true,
       };
     }
     const previous = findRecognizedSlot(slots, index, -1);
@@ -2056,6 +2181,9 @@ function completeManualNoteSlots(slots, allowed) {
       start: slot.start,
       end: slot.end,
       velocity: Math.round((previous?.velocity ?? next?.velocity ?? 72) * 0.9),
+      markerStart: slot.markerStart ?? slot.start,
+      markerIndex: slot.markerIndex ?? index,
+      manualMarker: true,
     };
   });
 }
@@ -2532,14 +2660,87 @@ function octaveRunBoundaryCost(notes, start, end, shift) {
 function quantizeTiming(notes, settings) {
   const grid = quantizeGridSeconds(settings);
   const offset = settings.beatOffsetSeconds || 0;
-  return notes.map((note) => {
-    const start = snapToGrid(note.start, grid, offset);
-    let end = snapToGrid(note.end, grid, offset);
+  if (!hasManualTiming(notes, settings)) {
+    return notes.map((note) => {
+      const start = snapToGrid(note.start, grid, offset);
+      let end = snapToGrid(note.end, grid, offset);
+      if (end <= start) {
+        end = start + grid;
+      }
+      return { ...note, start: Math.max(0, start), end: Math.max(0, end) };
+    });
+  }
+
+  const ordered = notes
+    .map((note, index) => ({
+      note,
+      index,
+      sourceStart: manualOnsetSource(note, index, settings),
+    }))
+    .sort((a, b) => a.sourceStart - b.sourceStart || a.index - b.index);
+
+  let previousTick = -Infinity;
+  const snapped = ordered.map((item) => {
+    const desiredTick = gridTick(item.sourceStart, grid, offset);
+    const tick = Math.max(desiredTick, previousTick + 1);
+    previousTick = tick;
+    return {
+      ...item,
+      tick,
+      start: gridTime(tick, grid, offset),
+    };
+  });
+
+  return snapped.map((item, index) => {
+    const next = snapped[index + 1];
+    const start = Math.max(0, item.start);
+    let end = next ? Math.max(start + 0.03, next.start) : snapToGrid(item.note.end, grid, offset);
     if (end <= start) {
       end = start + grid;
     }
-    return { ...note, start: Math.max(0, start), end: Math.max(0, end) };
+    return {
+      ...item.note,
+      start,
+      end: Math.max(start + 0.03, end),
+      markerStart: manualOnsetSource(item.note, item.index, settings),
+      markerIndex: item.note.markerIndex != null && Number.isFinite(Number(item.note.markerIndex))
+        ? Math.round(Number(item.note.markerIndex))
+        : item.index,
+      manualMarker: true,
+    };
   });
+}
+
+function hasManualTiming(notes, settings) {
+  return Boolean(
+    settings.manualMarkers?.length
+    || notes.some((note) => note.markerStart != null && Number.isFinite(Number(note.markerStart)) || note.manualMarker === true),
+  );
+}
+
+function manualOnsetSource(note, index, settings) {
+  if (note.markerStart != null && Number.isFinite(Number(note.markerStart))) {
+    return Math.max(0, Number(note.markerStart));
+  }
+  const markerIndex = note.markerIndex != null && Number.isFinite(Number(note.markerIndex)) ? Math.round(Number(note.markerIndex)) : index;
+  if (Array.isArray(settings.manualMarkers) && Number.isFinite(Number(settings.manualMarkers[markerIndex]))) {
+    return Math.max(0, Number(settings.manualMarkers[markerIndex]));
+  }
+  if (Array.isArray(settings.manualMarkers) && Number.isFinite(Number(settings.manualMarkers[index]))) {
+    return Math.max(0, Number(settings.manualMarkers[index]));
+  }
+  return Math.max(0, Number(note.start) || 0);
+}
+
+function gridTick(time, gridSeconds, offsetSeconds = 0) {
+  if (!Number.isFinite(time) || !Number.isFinite(gridSeconds) || gridSeconds <= 0) {
+    return 0;
+  }
+  return Math.round((time - offsetSeconds) / gridSeconds);
+}
+
+function gridTime(tick, gridSeconds, offsetSeconds = 0) {
+  return Math.max(0, offsetSeconds + tick * gridSeconds);
 }
 
 function quantizeGridSeconds(settings) {
@@ -2551,11 +2752,24 @@ function normalizedQuantizeGridBeats(value) {
   return [1, 0.5, 0.25, 0.125].includes(grid) ? grid : 0.25;
 }
 
-function writeMidi(notes, settings, chords = []) {
+function writeMidi(notes, settings, chords = [], options = {}) {
+  const includeMelody = options.includeMelody !== false;
+  const includeChords = options.includeChords !== false;
+  const includeArrangement = options.includeArrangement !== false;
   const ticksPerBeat = 480;
-  const tracks = [buildNoteTrack("Hum Melody", notes, settings, 0, true)];
-  if (chords.length) {
-    tracks.push(buildChordTrack(chords, settings));
+  const tracks = [];
+  if (includeMelody && notes.length) {
+    tracks.push(buildNoteTrack("Hum Melody", notes, settings, 0, true));
+  }
+  if (includeChords && chords.length) {
+    tracks.push(buildChordTrack(chords, settings, tracks.length === 0));
+  }
+  const arrangement = includeArrangement ? buildArrangementNotes(chords, settings) : [];
+  if (includeArrangement && arrangement.length) {
+    tracks.push(buildNoteTrack("Auto Arrangement", arrangement, settings, 2, tracks.length === 0));
+  }
+  if (!tracks.length) {
+    tracks.push(buildNoteTrack("Empty", [], settings, 0, true));
   }
 
   const bytes = [];
@@ -2572,7 +2786,143 @@ function writeMidi(notes, settings, chords = []) {
   return new Uint8Array(bytes);
 }
 
-function buildChordTrack(chords, settings) {
+function buildArrangementNotes(chords, settings) {
+  if (!settings.arrangement || !Array.isArray(chords) || !chords.length) {
+    return [];
+  }
+  const style = ["pop", "arpeggio", "ballad"].includes(settings.arrangementStyle)
+    ? settings.arrangementStyle
+    : "pop";
+  const density = ["light", "normal", "dense"].includes(settings.arrangementDensity)
+    ? settings.arrangementDensity
+    : "normal";
+  const beatSeconds = 60 / Math.max(30, settings.tempo || 120);
+  const gridSeconds = chordGridSeconds(settings);
+  const notes = [];
+  for (const chord of chords) {
+    const start = snapToGrid(chord.start, gridSeconds, settings.beatOffsetSeconds || 0);
+    const end = alignedChordEnd(chord, start, gridSeconds, settings.beatOffsetSeconds || 0);
+    if (end - start < 0.08) {
+      continue;
+    }
+    const voicing = arrangementVoicing(chord);
+    if (style === "arpeggio") {
+      appendArpeggioArrangement(notes, chord, voicing, start, end, beatSeconds, density);
+    } else if (style === "ballad") {
+      appendBalladArrangement(notes, chord, voicing, start, end, beatSeconds, settings, density);
+    } else {
+      appendPopArrangement(notes, chord, voicing, start, end, beatSeconds, settings, density);
+    }
+  }
+  return notes.sort((a, b) => a.start - b.start || a.note - b.note);
+}
+
+function arrangementVoicing(chord) {
+  const pitchClasses = chord.notes?.length
+    ? [...new Set(chord.notes.map((note) => ((note % 12) + 12) % 12))]
+    : chordIntervals(chord.quality || "maj").map((interval) => ((chord.root || 0) + interval) % 12);
+  const root = Number.isFinite(chord.root) ? chord.root : pitchClasses[0] || 0;
+  const bassRoot = midiForPitchClassNear(root, 38);
+  const bassFifth = midiForPitchClassNear((root + 7) % 12, 43);
+  const mid = pitchClasses.map((pc) => normalizeArrangementMidi(midiForPitchClassNear(pc, 58), 52, 72));
+  const high = pitchClasses.map((pc) => normalizeArrangementMidi(midiForPitchClassNear(pc, 66), 60, 79));
+  return {
+    bassRoot,
+    bassFifth,
+    mid: uniqueSorted(mid),
+    high: uniqueSorted(high),
+  };
+}
+
+function appendPopArrangement(output, chord, voicing, start, end, beatSeconds, settings, density) {
+  const sigTop = Math.max(1, settings.sigTop || 4);
+  const midpoint = Math.floor(sigTop / 2);
+  for (let beatIndex = 0, time = start; time < end - 0.035; beatIndex += 1, time += beatSeconds) {
+    const beatInBar = beatIndex % sigTop;
+    const isStrong = beatInBar === 0 || (sigTop >= 4 && beatInBar === midpoint);
+    if (isStrong || density === "dense") {
+      const bass = beatInBar === midpoint ? voicing.bassFifth : voicing.bassRoot;
+      appendArrangementNote(output, bass, time, beatSeconds * (density === "dense" ? 0.42 : 0.72), 58, end);
+    }
+    if (density === "light") {
+      if (isStrong) {
+        appendChordStack(output, voicing.mid, time, beatSeconds * 0.84, 47, end, 0.008);
+      }
+      continue;
+    }
+    appendChordStack(output, voicing.mid, time, beatSeconds * 0.46, 50, end, 0.006);
+    if (density === "dense") {
+      appendChordStack(output, voicing.high, time, beatSeconds * 0.32, 43, end, 0.004);
+    }
+  }
+}
+
+function appendArpeggioArrangement(output, chord, voicing, start, end, beatSeconds, density) {
+  const stepBeats = density === "dense" ? 0.25 : (density === "light" ? 1 : 0.5);
+  const step = beatSeconds * stepBeats;
+  const pattern = density === "light"
+    ? [voicing.bassRoot, ...voicing.mid]
+    : [voicing.bassRoot, voicing.mid[0], voicing.mid[1], voicing.mid[2], voicing.high[1] || voicing.mid[1], voicing.high[2] || voicing.mid[2]];
+  for (let index = 0, time = start; time < end - 0.035; index += 1, time += step) {
+    const note = pattern[index % pattern.length];
+    const velocity = note < 48 ? 55 : (density === "dense" ? 45 : 49);
+    appendArrangementNote(output, note, time, step * 0.88, velocity, end);
+  }
+}
+
+function appendBalladArrangement(output, chord, voicing, start, end, beatSeconds, settings, density) {
+  const sigTop = Math.max(1, settings.sigTop || 4);
+  const midpoint = Math.floor(sigTop / 2);
+  for (let beatIndex = 0, time = start; time < end - 0.035; beatIndex += 1, time += beatSeconds) {
+    const beatInBar = beatIndex % sigTop;
+    if (beatInBar === 0 || (sigTop >= 4 && beatInBar === midpoint)) {
+      const bass = beatInBar === midpoint ? voicing.bassFifth : voicing.bassRoot;
+      appendArrangementNote(output, bass, time, beatSeconds * 0.92, 52, end);
+    }
+    const chordTime = time;
+    appendChordStack(output, voicing.mid, chordTime, beatSeconds * (density === "light" ? 1.05 : 0.78), 45, end, 0.026);
+    if (density === "dense") {
+      appendArrangementNote(output, voicing.high[1] || voicing.mid[1], time, beatSeconds * 0.24, 39, end);
+    }
+  }
+}
+
+function appendChordStack(output, notes, start, duration, velocity, clipEnd, rollSeconds = 0) {
+  notes.forEach((note, index) => {
+    const rolledStart = start + index * rollSeconds;
+    appendArrangementNote(output, note, rolledStart, Math.max(0.05, duration - index * rollSeconds), velocity - index * 2, clipEnd);
+  });
+}
+
+function appendArrangementNote(output, note, start, duration, velocity, clipEnd) {
+  if (!Number.isFinite(note) || !Number.isFinite(start) || !Number.isFinite(duration) || duration <= 0 || start >= clipEnd - 0.025) {
+    return;
+  }
+  const end = Math.min(clipEnd, start + duration);
+  if (end - start < 0.025) {
+    return;
+  }
+  output.push({
+    note: clampInt(note, 0, 127),
+    start,
+    end,
+    velocity: clampInt(velocity, 1, 127),
+  });
+}
+
+function normalizeArrangementMidi(note, min, max) {
+  let midi = note;
+  while (midi < min) midi += 12;
+  while (midi > max) midi -= 12;
+  return clampInt(midi, 0, 127);
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter((value) => Number.isFinite(value)).map((value) => clampInt(value, 0, 127)))]
+    .sort((a, b) => a - b);
+}
+
+function buildChordTrack(chords, settings, includeTiming = false) {
   const notes = [];
   const gridSeconds = chordGridSeconds(settings);
   for (const chord of chords) {
@@ -2587,7 +2937,7 @@ function buildChordTrack(chords, settings) {
       });
     }
   }
-  return buildNoteTrack("Smart Chords", notes, settings, 1, false);
+  return buildNoteTrack("Smart Chords", notes, settings, 1, includeTiming);
 }
 
 function buildNoteTrack(name, notes, settings, channel, includeTiming) {
@@ -2648,21 +2998,88 @@ function pushProgramChange(bytes, delta, channel, program) {
   bytes.push(0xc0 | (channel & 0x0f), program & 0x7f);
 }
 
+function preventDisabledDownload(event) {
+  const link = event.currentTarget;
+  if (link.classList.contains("disabled")) {
+    event.preventDefault();
+  }
+}
+
 function setMidiBlob(blob) {
+  const exports = buildMidiExportBlobs(blob);
+  setMidiDownloadBlobs(exports);
+}
+
+function buildMidiExportBlobs(fullBlob = null) {
+  if (!state.notes.length) {
+    return { full: fullBlob, melody: null, accompaniment: null };
+  }
+  const settings = readSettings();
+  const full = fullBlob || new Blob(
+    [writeMidi(state.notes, settings, state.chords, { includeMelody: true, includeChords: true, includeArrangement: true })],
+    { type: "audio/midi" },
+  );
+  const melody = new Blob(
+    [writeMidi(state.notes, settings, [], { includeMelody: true, includeChords: false, includeArrangement: false })],
+    { type: "audio/midi" },
+  );
+  const hasAccompaniment = state.chords.length > 0;
+  const accompaniment = hasAccompaniment
+    ? new Blob(
+      [writeMidi([], settings, state.chords, { includeMelody: false, includeChords: true, includeArrangement: true })],
+      { type: "audio/midi" },
+    )
+    : null;
+  return { full, melody, accompaniment };
+}
+
+function setMidiDownloadBlobs(exports) {
   clearMidiUrl();
-  state.midiUrl = URL.createObjectURL(blob);
-  els.downloadLink.href = state.midiUrl;
-  els.downloadLink.classList.remove("disabled");
-  els.downloadLink.download = `hum-${Date.now()}.mid`;
+  const stamp = Date.now();
+  setDownloadLink(els.downloadLink, exports.full, `hum-full-${stamp}.mid`, "full");
+  setDownloadLink(els.downloadMelodyLink, exports.melody, `hum-melody-${stamp}.mid`, "melody");
+  setDownloadLink(els.downloadAccompanimentLink, exports.accompaniment, `hum-accompaniment-${stamp}.mid`, "accompaniment");
+}
+
+function setDownloadLink(link, blob, filename, key) {
+  if (!link) {
+    return;
+  }
+  if (!blob) {
+    link.href = "#";
+    link.classList.add("disabled");
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  state.midiUrls[key] = url;
+  if (key === "full") {
+    state.midiUrl = url;
+  }
+  link.href = url;
+  link.download = filename;
+  link.classList.remove("disabled");
 }
 
 function clearMidiUrl() {
-  if (state.midiUrl) {
+  const revoked = new Set();
+  for (const key of Object.keys(state.midiUrls)) {
+    if (state.midiUrls[key]) {
+      URL.revokeObjectURL(state.midiUrls[key]);
+      revoked.add(state.midiUrls[key]);
+    }
+    state.midiUrls[key] = null;
+  }
+  if (state.midiUrl && !revoked.has(state.midiUrl)) {
     URL.revokeObjectURL(state.midiUrl);
   }
   state.midiUrl = null;
-  els.downloadLink.href = "#";
-  els.downloadLink.classList.add("disabled");
+  [els.downloadLink, els.downloadMelodyLink, els.downloadAccompanimentLink].forEach((link) => {
+    if (!link) {
+      return;
+    }
+    link.href = "#";
+    link.classList.add("disabled");
+  });
 }
 
 function render() {
@@ -2719,9 +3136,9 @@ function drawPianoRoll() {
   const maxNote = Math.min(127, Math.max(...state.notes.map((n) => n.note)) + 4);
   const lanes = maxNote - minNote + 1;
   const left = 48;
-  const top = 16;
+  const top = 28;
   const rollWidth = width - left - 14;
-  const rollHeight = height - top - 20;
+  const rollHeight = height - top - 18;
   const duration = Math.max(state.duration, ...state.notes.map((n) => n.end), 1);
   state.pianoLayout = { left, top, rollWidth, rollHeight, duration, minNote, maxNote, lanes };
   for (let note = minNote; note <= maxNote; note += 1) {
@@ -2735,6 +3152,7 @@ function drawPianoRoll() {
     }
   }
   drawBeatGrid(ctx, left, top, rollWidth, rollHeight, duration);
+  drawPianoMarkerGuides(ctx, left, top, rollWidth, rollHeight, duration);
   state.notes.forEach((note, index) => {
     const x = left + note.start / duration * rollWidth;
     const w = Math.max(8, (note.end - note.start) / duration * rollWidth);
@@ -2812,18 +3230,78 @@ function drawMarkers(ctx, width, height) {
 }
 
 function drawBeatGrid(ctx, left, top, width, height, duration) {
-  const beatSeconds = 60 / clampInt(els.tempo.value, 40, 240);
+  if (!duration) {
+    return;
+  }
+  const settings = readSettings();
+  const beatSeconds = 60 / settings.tempo;
+  const gridSeconds = quantizeGridSeconds(settings);
+  const sigTop = Math.max(1, settings.sigTop || 4);
   const offset = state.beatOffsetSeconds || 0;
-  ctx.strokeStyle = "#394255";
-  ctx.lineWidth = 1;
-  for (let time = offset; time <= duration + beatSeconds; time += beatSeconds) {
-    if (time < 0) continue;
+  const firstTick = Math.floor((0 - offset) / gridSeconds) - 1;
+  const lastTick = Math.ceil((duration - offset) / gridSeconds) + 1;
+  const gridsPerBeat = Math.max(1, Math.round(beatSeconds / gridSeconds));
+  ctx.save();
+  ctx.fillStyle = "rgba(240, 164, 58, 0.08)";
+  ctx.fillRect(left, top - 20, width, 18);
+  ctx.font = "11px Segoe UI";
+  ctx.textBaseline = "middle";
+  for (let tick = firstTick; tick <= lastTick; tick += 1) {
+    const time = offset + tick * gridSeconds;
+    if (time < 0 || time > duration) {
+      continue;
+    }
     const x = left + time / duration * width;
+    const beatIndex = Math.round((time - offset) / beatSeconds);
+    const isBeat = Math.abs((time - offset) / beatSeconds - beatIndex) < 0.001;
+    const isBar = isBeat && ((beatIndex % sigTop) + sigTop) % sigTop === 0;
+    ctx.strokeStyle = isBar ? "#6f7d93" : (isBeat ? "#465268" : "#2a3344");
+    ctx.lineWidth = isBar ? 1.4 : 1;
     ctx.beginPath();
     ctx.moveTo(x, top);
     ctx.lineTo(x, top + height);
     ctx.stroke();
+    if (isBar || (isBeat && gridsPerBeat <= 4)) {
+      const bar = Math.floor(beatIndex / sigTop) + 1;
+      const beat = ((beatIndex % sigTop) + sigTop) % sigTop + 1;
+      ctx.fillStyle = isBar ? "#d6deeb" : "#8795aa";
+      ctx.fillText(isBar ? `${bar}` : `${beat}`, x + 3, top - 10);
+    }
   }
+  ctx.restore();
+}
+
+function drawPianoMarkerGuides(ctx, left, top, width, height, duration) {
+  if (!duration) {
+    return;
+  }
+  const markerSources = state.markers.length
+    ? cleanMarkers(state.markers, duration)
+    : state.notes
+      .map((note) => Number(note.markerStart))
+      .filter((time) => Number.isFinite(time) && time >= 0 && time <= duration);
+  if (!markerSources.length) {
+    return;
+  }
+  ctx.save();
+  ctx.strokeStyle = "rgba(240, 164, 58, 0.78)";
+  ctx.fillStyle = "rgba(240, 164, 58, 0.9)";
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([4, 5]);
+  for (const marker of markerSources) {
+    const x = left + marker / duration * width;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, top + height);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, top - 2);
+    ctx.lineTo(x - 4, top - 9);
+    ctx.lineTo(x + 4, top - 9);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
 }
 
 function updateNoteLabels() {
@@ -2832,6 +3310,7 @@ function updateNoteLabels() {
   if (!state.notes.length) {
     els.rangeLabel.textContent = "-";
     els.resultSummary.textContent = state.audioBuffer ? "可生成 MIDI" : "等待音频";
+    renderHarmonyEntry();
     renderChordEditor();
     renderNoteEditor();
     els.midiPlayBtn.disabled = true;
@@ -2851,9 +3330,48 @@ function updateNoteLabels() {
   const maxNote = Math.max(...state.notes.map((note) => note.note));
   els.rangeLabel.textContent = `${noteName(minNote)} - ${noteName(maxNote)}`;
   const chordPart = state.chords.length ? `，${state.chords.length} 个和弦` : "";
-  els.resultSummary.textContent = `${state.notes.length} 个音符${chordPart}，${Math.max(...state.notes.map((n) => n.end)).toFixed(1)}s`;
+  const arrangementPart = readSettings().arrangement && state.chords.length ? "，含自动编曲" : "";
+  els.resultSummary.textContent = `${state.notes.length} 个音符${chordPart}${arrangementPart}，${Math.max(...state.notes.map((n) => n.end)).toFixed(1)}s`;
+  renderHarmonyEntry();
   renderNoteEditor();
   renderChordEditor();
+}
+
+function renderHarmonyEntry() {
+  const hasNotes = state.notes.length > 0;
+  const hasChords = state.chords.length > 0;
+  const isHarmonyPage = state.currentPage === "harmony";
+  if (els.harmonyEntry) {
+    els.harmonyEntry.classList.toggle("ready", hasChords);
+    els.harmonyEntry.classList.toggle("empty", !hasChords);
+  }
+  if (els.harmonyEntryText) {
+    if (hasChords) {
+      const arrangementText = readSettings().arrangement ? "自动编曲开启" : "自动编曲关闭";
+      els.harmonyEntryText.textContent = `${state.chords.length} 个和弦 · ${arrangementText} · 点击下方和弦块可直接修改`;
+    } else if (hasNotes) {
+      els.harmonyEntryText.textContent = "尚未生成和弦：确认开启智能配和弦后重新生成 MIDI";
+    } else {
+      els.harmonyEntryText.textContent = "生成 MIDI 后可编辑和弦和自动伴奏";
+    }
+  }
+  if (els.harmonyEntryBtn) {
+    els.harmonyEntryBtn.disabled = !hasChords || isHarmonyPage;
+    els.harmonyEntryBtn.textContent = isHarmonyPage ? "正在编辑" : (hasChords ? "编辑和弦" : "等待和弦");
+  }
+  if (els.harmonyTabBadge) {
+    els.harmonyTabBadge.hidden = !hasChords;
+    els.harmonyTabBadge.textContent = hasChords ? String(state.chords.length) : "";
+  }
+}
+
+function openHarmonyPage() {
+  if (!state.chords.length) {
+    setStatus("需要先生成和弦", "error");
+    return;
+  }
+  setWorkflowPage("harmony");
+  setStatus("已打开和弦编配");
 }
 
 function keyLabelText() {
@@ -2944,9 +3462,43 @@ function applyNoteEditorChanges() {
   note.note = clampInt(els.notePitchSelect.value, 0, 127);
   note.start = Math.max(0, origin + startBeat * beat);
   note.end = Math.max(note.start + beat * quantizeGridBeats(), note.start + durationBeat * beat);
+  note.markerStart = note.start;
+  note.manualMarker = note.manualMarker === true || (note.markerIndex != null && Number.isFinite(Number(note.markerIndex)));
   note.velocity = clampInt(els.noteVelocity.value, 1, 127);
   sortNotesKeeping(note);
   finalizeNoteEdit("音符已修改");
+  void previewNote(note);
+}
+
+function shiftSelectedNoteBeats(deltaBeats) {
+  const note = selectedNote();
+  if (!note) {
+    return;
+  }
+  clearKeySnapUndo();
+  const beat = beatSeconds();
+  const duration = Math.max(beat * quantizeGridBeats(), note.end - note.start);
+  note.start = Math.max(0, note.start + deltaBeats * beat);
+  note.end = note.start + duration;
+  note.markerStart = note.start;
+  note.manualMarker = note.manualMarker === true || (note.markerIndex != null && Number.isFinite(Number(note.markerIndex)));
+  sortNotesKeeping(note);
+  finalizeNoteEdit(deltaBeats < 0 ? "已前移一格" : "已后移一格");
+  void previewNote(note);
+}
+
+function resizeSelectedNoteBeats(deltaBeats) {
+  const note = selectedNote();
+  if (!note) {
+    return;
+  }
+  clearKeySnapUndo();
+  const beat = beatSeconds();
+  const minDuration = beat * quantizeGridBeats();
+  const nextDuration = Math.max(minDuration, note.end - note.start + deltaBeats * beat);
+  note.end = note.start + nextDuration;
+  sortNotesKeeping(note);
+  finalizeNoteEdit(deltaBeats < 0 ? "已缩短一格" : "已延长一格");
   void previewNote(note);
 }
 
@@ -2983,7 +3535,8 @@ function quantizeCurrentNotes() {
   const settings = { ...readSettings(), quantize: true };
   state.notes = enforceOrder(quantizeTiming(state.notes, settings), settings);
   state.selectedNoteIndex = state.notes.length ? Math.max(0, Math.min(state.selectedNoteIndex, state.notes.length - 1)) : -1;
-  finalizeNoteEdit(`已按 ${quantizeGridLabel(settings.quantizeGridBeats)} 量化`);
+  const sourceLabel = hasManualTiming(state.notes, settings) ? "Space 音头" : "音符起点";
+  finalizeNoteEdit(`已按 ${sourceLabel}吸附到 ${quantizeGridLabel(settings.quantizeGridBeats)}`);
 }
 
 function applyKeySnapToCurrentNotes() {
@@ -3079,7 +3632,7 @@ function finalizeNoteEdit(statusText) {
 }
 
 function renderChordEditor() {
-  if (state.currentPage !== "harmony" && state.currentPage !== "export") {
+  if (!["detect", "harmony", "export"].includes(state.currentPage)) {
     els.chordEditor.hidden = true;
     return;
   }
@@ -3114,6 +3667,10 @@ function renderChordEditor() {
 
 function selectChordForEdit(index) {
   state.selectedChordIndex = index;
+  if (state.currentPage !== "harmony") {
+    setWorkflowPage("harmony");
+    return;
+  }
   renderChordEditor();
 }
 
@@ -3161,19 +3718,44 @@ function handleChordSelectChange() {
   setStatus("和弦已修改");
 }
 
+function handleArrangementSettingsChange() {
+  if (!state.notes.length) {
+    return;
+  }
+  stopMidiPlayback(false);
+  refreshMidiBlobFromState();
+  updateNoteLabels();
+  if (els.arrangement.checked && state.chords.length) {
+    setStatus("自动编曲已更新");
+  } else if (els.arrangement.checked) {
+    setStatus("需要先生成和弦才能自动编曲", "error");
+  } else {
+    setStatus("自动编曲已关闭");
+  }
+}
+
 function buildChordOptionGroups() {
   const diatonic = state.key ? chordChoicesForKey(state.key) : [];
+  const color = state.key ? colorChordChoicesForKey(state.key) : [];
   const all = [];
   for (let root = 0; root < 12; root += 1) {
     all.push(makeChordChoice(root, "maj"));
     all.push(makeChordChoice(root, "min"));
+    all.push(makeChordChoice(root, "7"));
+    all.push(makeChordChoice(root, "maj7"));
+    all.push(makeChordChoice(root, "min7"));
+    all.push(makeChordChoice(root, "sus4"));
+    all.push(makeChordChoice(root, "add9"));
+    all.push(makeChordChoice(root, "6"));
+    all.push(makeChordChoice(root, "6add9"));
   }
   for (let root = 0; root < 12; root += 1) {
     all.push(makeChordChoice(root, "dim"));
   }
   return [
-    { label: "调内三和弦", options: diatonic.length ? diatonic : all.slice(0, 24) },
-    { label: "全部三和弦", options: uniqueChordChoices(all) },
+    { label: "调内和弦", options: diatonic.length ? diatonic : all.slice(0, 24) },
+    { label: "色彩和弦", options: color.length ? color : all.filter((item) => ["7", "maj7", "min7", "sus4", "add9", "6", "6add9"].includes(item.quality)).slice(0, 48) },
+    { label: "全部基础和弦", options: uniqueChordChoices(all) },
   ];
 }
 
@@ -3183,6 +3765,35 @@ function chordChoicesForKey(key) {
     ? ["min", "dim", "maj", "min", "maj", "maj", "maj"]
     : ["maj", "min", "min", "maj", "maj", "min", "dim"];
   return degrees.map((degree, index) => makeChordChoice((key.tonic + degree) % 12, qualities[index]));
+}
+
+function colorChordChoicesForKey(key) {
+  const tonic = key.tonic;
+  if (key.mode === "minor") {
+    return uniqueChordChoices([
+      makeChordChoice(tonic, "min7"),
+      makeChordChoice((tonic + 3) % 12, "maj7"),
+      makeChordChoice((tonic + 5) % 12, "min7"),
+      makeChordChoice((tonic + 7) % 12, "7"),
+      makeChordChoice((tonic + 8) % 12, "maj7"),
+      makeChordChoice((tonic + 10) % 12, "7"),
+      makeChordChoice(tonic, "sus4"),
+      makeChordChoice(tonic, "add9"),
+    ]);
+  }
+  return uniqueChordChoices([
+    makeChordChoice(tonic, "maj7"),
+    makeChordChoice(tonic, "add9"),
+    makeChordChoice(tonic, "6"),
+    makeChordChoice(tonic, "6add9"),
+    makeChordChoice((tonic + 2) % 12, "min7"),
+    makeChordChoice((tonic + 4) % 12, "min7"),
+    makeChordChoice((tonic + 5) % 12, "maj7"),
+    makeChordChoice((tonic + 5) % 12, "add9"),
+    makeChordChoice((tonic + 7) % 12, "7"),
+    makeChordChoice((tonic + 7) % 12, "sus4"),
+    makeChordChoice((tonic + 9) % 12, "min7"),
+  ]);
 }
 
 function uniqueChordChoices(options) {
@@ -3200,14 +3811,14 @@ function makeChordChoice(root, quality) {
     root,
     quality,
     name: chordName(root, quality),
-    pitchClasses: chordIntervals(quality).map((interval) => (root + interval) % 12),
+    pitchClasses: [...new Set(chordIntervals(quality).map((interval) => (root + interval) % 12))],
   };
 }
 
 function parseChordValue(value) {
   const [rootText, quality] = value.split(":");
   const root = Number(rootText);
-  if (!Number.isInteger(root) || !["maj", "min", "dim"].includes(quality)) {
+  if (!Number.isInteger(root) || !["maj", "min", "dim", "7", "maj7", "min7", "sus4", "add9", "6", "6add9"].includes(quality)) {
     return null;
   }
   return makeChordChoice(root, quality);
@@ -3220,42 +3831,69 @@ function chordValue(chord) {
 function chordIntervals(quality) {
   if (quality === "min") return [0, 3, 7];
   if (quality === "dim") return [0, 3, 6];
+  if (quality === "7") return [0, 4, 7, 10];
+  if (quality === "maj7") return [0, 4, 7, 11];
+  if (quality === "min7") return [0, 3, 7, 10];
+  if (quality === "sus4") return [0, 5, 7];
+  if (quality === "add9") return [0, 4, 7, 14];
+  if (quality === "6") return [0, 4, 7, 9];
+  if (quality === "6add9") return [0, 4, 7, 9, 14];
   return [0, 4, 7];
 }
 
 function chordName(root, quality) {
   if (quality === "min") return `${NOTE_NAMES[root]}m`;
   if (quality === "dim") return `${NOTE_NAMES[root]}dim`;
+  if (quality === "7") return `${NOTE_NAMES[root]}7`;
+  if (quality === "maj7") return `${NOTE_NAMES[root]}maj7`;
+  if (quality === "min7") return `${NOTE_NAMES[root]}m7`;
+  if (quality === "sus4") return `${NOTE_NAMES[root]}sus4`;
+  if (quality === "add9") return `${NOTE_NAMES[root]}add9`;
+  if (quality === "6") return `${NOTE_NAMES[root]}6`;
+  if (quality === "6add9") return `${NOTE_NAMES[root]}6add9`;
   return NOTE_NAMES[root];
 }
 
 function voiceChordForPreview(chord, previousVoicing) {
-  const choices = chord.pitchClasses.map((pc) => {
+  const pitchClasses = chord.pitchClasses.slice(0, chord.pitchClasses.length > 4 ? 4 : chord.pitchClasses.length);
+  const choices = pitchClasses.map((pc, index) => {
     const notes = [];
-    for (let midi = 38; midi <= 69; midi += 1) {
+    const min = index === 0 ? 38 : 46;
+    const max = index === 0 ? 58 : 74;
+    for (let midi = min; midi <= max; midi += 1) {
       if (midi % 12 === pc) notes.push(midi);
     }
     return notes;
   });
   let best = null;
   let bestScore = Infinity;
-  for (const a of choices[0]) {
-    for (const b of choices[1]) {
-      for (const c of choices[2]) {
-        const voicing = [...new Set([a, b, c])].sort((left, right) => left - right);
-        if (voicing.length < 3 || voicing[2] - voicing[0] > 19) continue;
-        let score = Math.abs((voicing[0] + voicing[1] + voicing[2]) / 3 - 54);
-        if (previousVoicing?.length) {
-          score += voicingDistance(voicing, previousVoicing) * 0.25;
-        }
-        if (score < bestScore) {
-          best = voicing;
-          bestScore = score;
-        }
+  const search = (index, selected) => {
+    if (index >= choices.length) {
+      const voicing = [...new Set(selected)].sort((left, right) => left - right);
+      if (voicing.length < Math.min(3, pitchClasses.length)) return;
+      const span = voicing[voicing.length - 1] - voicing[0];
+      if (span > 26 || voicing[0] < 36 || voicing[voicing.length - 1] > 76) return;
+      const average = voicing.reduce((sum, note) => sum + note, 0) / voicing.length;
+      let score = span * 0.16 + Math.abs(average - 56) * 0.11 + Math.abs(voicing[0] - midiForPitchClassNear(chord.root, 42)) * 0.045;
+      if (voicing[0] % 12 !== chord.root) score += 0.62;
+      if (previousVoicing?.length) {
+        score += voicingDistance(voicing, previousVoicing) * 0.17;
       }
+      if (score < bestScore) {
+        best = voicing;
+        bestScore = score;
+      }
+      return;
     }
+    for (const note of choices[index]) {
+      search(index + 1, [...selected, note]);
+    }
+  };
+  search(0, []);
+  if (best) {
+    return best;
   }
-  return best || chord.pitchClasses.map((pc) => midiForPitchClassNear(pc, 54)).sort((a, b) => a - b);
+  return pitchClasses.map((pc, index) => midiForPitchClassNear(pc, index === 0 ? 42 : 58)).sort((a, b) => a - b);
 }
 
 function voicingDistance(a, b) {

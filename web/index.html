@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Hum Pitch Studio</title>
-  <link rel="stylesheet" href="styles.css?v=20260621-keysnap">
+  <link rel="stylesheet" href="styles.css?v=20260621-midi-click">
 </head>
 <body>
   <main class="app-shell">
@@ -22,7 +22,10 @@
     <nav class="workflow-nav" aria-label="工作流">
       <button class="page-tab active" type="button" data-page-tab="record">录音/导入</button>
       <button class="page-tab" type="button" data-page-tab="detect">识别修音</button>
-      <button class="page-tab" type="button" data-page-tab="harmony">和弦编配</button>
+      <button class="page-tab" type="button" data-page-tab="harmony">
+        <span>和弦编配</span>
+        <span id="harmonyTabBadge" class="tab-badge" hidden></span>
+      </button>
       <button class="page-tab" type="button" data-page-tab="export">试听导出</button>
     </nav>
 
@@ -155,8 +158,25 @@
             <label>
               <span>和弦粒度</span>
               <select id="harmonyGridSelect">
+                <option value="adaptive" selected>智能自适应</option>
                 <option value="bar">一小节</option>
-                <option value="half" selected>半小节</option>
+                <option value="half">半小节</option>
+              </select>
+            </label>
+            <label>
+              <span>伴奏风格</span>
+              <select id="arrangementStyleSelect">
+                <option value="pop" selected>流行节奏</option>
+                <option value="arpeggio">分解和弦</option>
+                <option value="ballad">抒情铺底</option>
+              </select>
+            </label>
+            <label>
+              <span>伴奏密度</span>
+              <select id="arrangementDensitySelect">
+                <option value="light">简洁</option>
+                <option value="normal" selected>标准</option>
+                <option value="dense">丰富</option>
               </select>
             </label>
             <label>
@@ -189,6 +209,10 @@
             <input id="harmonyToggle" type="checkbox" checked>
             <span>智能配和弦</span>
           </label>
+          <label class="toggle-row">
+            <input id="arrangementToggle" type="checkbox" checked>
+            <span>自动编曲</span>
+          </label>
         </section>
       </aside>
 
@@ -215,10 +239,23 @@
           <button id="keySnapBtn" data-pages="detect" disabled>按调性修正</button>
           <button id="keyUndoBtn" data-pages="detect" disabled>撤销调性修正</button>
           <button id="midiPlayBtn" data-pages="detect harmony export" disabled>试听 MIDI</button>
+          <label class="midi-click-toggle" data-pages="detect harmony export">
+            <input id="midiMetronomeToggle" type="checkbox">
+            <span>MIDI 节拍器</span>
+          </label>
           <button id="playBtn" data-pages="detect export" disabled>试听音频</button>
-          <a id="downloadLink" class="download disabled" data-pages="export" href="#" download="hum-melody.mid">下载 MIDI</a>
+          <a id="downloadLink" class="download disabled" data-pages="export" href="#" download="hum-full.mid">下载完整 MIDI</a>
+          <a id="downloadMelodyLink" class="download secondary disabled" data-pages="export" href="#" download="hum-melody.mid">主旋律 MIDI</a>
+          <a id="downloadAccompanimentLink" class="download secondary disabled" data-pages="export" href="#" download="hum-accompaniment.mid">伴奏 MIDI</a>
           <div class="result-summary" id="resultSummary" data-pages="detect harmony export">等待音频</div>
-          <div class="chord-strip" id="chordStrip" data-pages="harmony export">和弦未生成</div>
+          <div class="harmony-entry" id="harmonyEntry" data-pages="detect harmony export">
+            <div class="harmony-entry-text">
+              <strong>和弦编配</strong>
+              <span id="harmonyEntryText">生成 MIDI 后可编辑和弦和自动伴奏</span>
+            </div>
+            <button id="harmonyEntryBtn" type="button" disabled>等待和弦</button>
+          </div>
+          <div class="chord-strip" id="chordStrip" data-pages="detect harmony export">和弦未生成</div>
           <div class="note-editor" id="noteEditor" data-pages="detect" hidden>
             <span id="noteEditLabel">未选中音符</span>
             <label>
@@ -241,6 +278,10 @@
             <button id="noteDownBtn" type="button">降半音</button>
             <button id="noteUpBtn" type="button">升半音</button>
             <button id="noteOctaveUpBtn" type="button">升八度</button>
+            <button id="noteShiftLeftBtn" type="button">前移一格</button>
+            <button id="noteShiftRightBtn" type="button">后移一格</button>
+            <button id="noteShortenBtn" type="button">缩短一格</button>
+            <button id="noteLengthenBtn" type="button">延长一格</button>
             <button id="noteApplyBtn" type="button" class="primary">应用</button>
             <button id="noteDeleteBtn" type="button">删除</button>
           </div>
@@ -253,7 +294,7 @@
     </section>
   </main>
 
-  <script src="piano.js?v=20260621-keysnap"></script>
-  <script src="app.js?v=20260621-keysnap"></script>
+  <script src="piano.js?v=20260621-midi-click"></script>
+  <script src="app.js?v=20260621-midi-click"></script>
 </body>
 </html>
